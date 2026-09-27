@@ -410,6 +410,7 @@ export default function App() {
   const [tabs, setTabs] = useState<OpenTab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
+  const [treeFocus, setTreeFocus] = useState<"file" | "folder">("file");
   const [file, setFile] = useState<FilePayload | null>(null);
   const [draft, setDraft] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("preview");
@@ -1006,6 +1007,7 @@ export default function App() {
         setDraft("");
         setDirty(false);
         setActivePath(path);
+        setTreeFocus("file");
         setTabs((prev) => {
           if (prev.some((t) => t.path === path)) return prev;
           return [
@@ -1071,6 +1073,7 @@ export default function App() {
       setDraft(payload.content);
       setDirty(false);
       setActivePath(resolvedPath);
+      setTreeFocus("file");
       writeLastNotePath(resolvedPath);
       syncDeepLinkNotePath(resolvedPath);
       setTabs((prev) => {
@@ -1536,6 +1539,11 @@ export default function App() {
     [activePath, pastingImage, refreshTree, showAlert],
   );
 
+  const selectTreeFolder = useCallback((path: string) => {
+    setSelectedFolder(path);
+    setTreeFocus("folder");
+  }, []);
+
   const draftParentPath = useMemo(() => {
     if (selectedFolder) return selectedFolder;
     if (!activePath) return "";
@@ -1611,6 +1619,7 @@ export default function App() {
       try {
         await api.mkdir(path);
         setSelectedFolder(path);
+        setTreeFocus("folder");
         await refreshTree();
       } catch (err) {
         void showAlert(err instanceof Error ? err.message : String(err));
@@ -1992,6 +2001,7 @@ export default function App() {
   const onFolderMenuAction = useCallback(
     async (action: FolderMenuAction, path: string) => {
       setSelectedFolder(path);
+      setTreeFocus("folder");
       if (action === "new-note") {
         await createNoteIn(path);
         return;
@@ -2050,6 +2060,7 @@ export default function App() {
           removeOpenFolders(path);
           if (selectedFolder === path || selectedFolder?.startsWith(path + "/")) {
             setSelectedFolder(null);
+            setTreeFocus("file");
           }
           if (activePath === path || activePath?.startsWith(path + "/")) {
             setActivePath(null);
@@ -2710,19 +2721,21 @@ export default function App() {
                     nodes={pinnedNodes}
                     activePath={activePath}
                     selectedFolder={selectedFolder}
+                    treeFocus={treeFocus}
                     pinnedPaths={pinnedPathSet}
                     hidePinBadge
                     onOpen={(p) => void openFile(p)}
-                    onSelectFolder={setSelectedFolder}
+                    onSelectFolder={selectTreeFolder}
                     onMove={(from, toParent) => void movePath(from, toParent)}
                     onReorder={(folder, names) => void reorderInFolder(folder, names)}
                     onUploadFiles={(parent, files) => void uploadFilesToFolder(parent, files)}
                     onFolderContextMenu={(path, x, y) =>
                       setCtxMenu({ kind: "folder", path, x, y })
                     }
-                    onFileContextMenu={(path, x, y) =>
-                      setCtxMenu({ kind: "file", path, x, y })
-                    }
+                    onFileContextMenu={(path, x, y) => {
+                      setTreeFocus("file");
+                      setCtxMenu({ kind: "file", path, x, y });
+                    }}
                     onPanelContextMenu={openPanelContextMenu}
                     draftFolder={draftFolder}
                     onDraftConfirm={(name) => void confirmCreateFolder(name)}
@@ -2738,18 +2751,20 @@ export default function App() {
                 nodes={visibleTree}
                 activePath={activePath}
                 selectedFolder={selectedFolder}
+                treeFocus={treeFocus}
                 pinnedPaths={pinnedPathSet}
                 onOpen={(p) => void openFile(p)}
-                onSelectFolder={setSelectedFolder}
+                onSelectFolder={selectTreeFolder}
                 onMove={(from, toParent) => void movePath(from, toParent)}
                 onReorder={(folder, names) => void reorderInFolder(folder, names)}
                 onUploadFiles={(parent, files) => void uploadFilesToFolder(parent, files)}
                 onFolderContextMenu={(path, x, y) =>
                   setCtxMenu({ kind: "folder", path, x, y })
                 }
-                onFileContextMenu={(path, x, y) =>
-                  setCtxMenu({ kind: "file", path, x, y })
-                }
+                onFileContextMenu={(path, x, y) => {
+                  setTreeFocus("file");
+                  setCtxMenu({ kind: "file", path, x, y });
+                }}
                 onPanelContextMenu={openPanelContextMenu}
                 draftFolder={draftFolder}
                 onDraftConfirm={(name) => void confirmCreateFolder(name)}

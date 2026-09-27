@@ -69,6 +69,8 @@ type Props = {
   nodes: TreeNode[];
   activePath: string | null;
   selectedFolder?: string | null;
+  /** Which row kind shows the selection highlight. */
+  treeFocus?: "file" | "folder";
   onOpen: (path: string) => void;
   onSelectFolder?: (path: string) => void;
   onFolderContextMenu?: (path: string, x: number, y: number) => void;
@@ -455,6 +457,7 @@ function TreeRow({
   siblings,
   activePath,
   selectedFolder = null,
+  treeFocus = "file",
   onOpen,
   onSelectFolder,
   onFolderContextMenu,
@@ -614,7 +617,7 @@ function TreeRow({
       onDraftConfirm &&
       onDraftCancel;
 
-    const isSelected = selectedFolder === node.path;
+    const isSelected = treeFocus === "folder" && selectedFolder === node.path;
     const isRenaming = renamingPath === node.path;
 
     return (
@@ -717,6 +720,7 @@ function TreeRow({
                 nodes={node.children}
                 activePath={activePath}
                 selectedFolder={selectedFolder}
+                treeFocus={treeFocus}
                 onOpen={onOpen}
                 onSelectFolder={onSelectFolder}
                 onFolderContextMenu={onFolderContextMenu}
@@ -765,7 +769,7 @@ function TreeRow({
 
   return (
     <div
-      className={`tree-item${activePath === node.path ? " active" : ""}${isInsertBefore ? " drop-insert-before" : ""}${isInsertAfter ? " drop-insert-after" : ""}`}
+      className={`tree-item${treeFocus !== "folder" && activePath === node.path ? " active" : ""}${isInsertBefore ? " drop-insert-before" : ""}${isInsertAfter ? " drop-insert-after" : ""}`}
       style={{ paddingLeft: 10 + depth * 14 + 14 }}
       draggable={nativeDrag}
       {...longPress}
