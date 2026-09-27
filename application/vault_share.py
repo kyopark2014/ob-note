@@ -14,6 +14,7 @@ Share ``type``:
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import secrets
@@ -21,7 +22,7 @@ import threading
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from application import vault_backend
@@ -828,6 +829,117 @@ def read_vault_bytes(rel_path: str) -> Optional[bytes]:
         return None
 
 
+def _is_passthrough_asset(inner: str) -> bool:
+    value = (inner or "").strip()
+    if not value:
+        return True
+    low = value.lower()
+    return (
+        low.startswith("http://")
+        or low.startswith("https://")
+        or low.startswith("data:")
+        or value.startswith("/")
+        or value.startswith("#")
+    )
+
+
+def _css_length(value: str | None) -> str | None:
+    """``700`` → ``700px``. Percent and ``px`` are kept. Other values are ignored."""
+    if value is None:
+        return None
+    raw = value.strip()
+    if re.fullmatch(r"\d+(?:\.\d+)?", raw):
+        return f"{raw}px"
+    if re.fullmatch(r"\d+(?:\.\d+)?px", raw, flags=re.IGNORECASE):
+        return raw[:-2] + "px"
+    if re.fullmatch(r"\d+(?:\.\d+)?%", raw):
+        return raw
+    return None
+
+
+def _html_attr(tag: str, name: str) -> str | None:
+    match = re.search(
+        rf"""\b{re.escape(name)}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+))""",
+        tag,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    for group in match.groups():
+        if group is not None:
+            return html.unescape(group)
+    return None
+
+
+def _inject_img_size_style(tag: str) -> str:
+    """Honor GitHub ``width`` / ``height`` on ``<img>`` against viewer CSS."""
+    if re.search(r"\bstyle\s*=", tag, flags=re.IGNORECASE):
+        return tag
+    width = _css_length(_html_attr(tag, "width"))
+    height = _css_length(_html_attr(tag, "height"))
+    decls: list[str] = []
+    if width:
+        decls.append(f"width:{width}")
+    if height:
+        decls.append(f"height:{height}")
+    if not decls:
+        return tag
+    style = ";".join(decls)
+    stripped = tag.rstrip()
+    if stripped.endswith("/>"):
+        return stripped[:-2].rstrip() + f' style="{style}" />'
+    if stripped.endswith(">"):
+        return stripped[:-1] + f' style="{style}">'
+    return tag
+
+
+_HTML_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_HTML_IMG_SRC_RE = re.compile(
+    r"""(\bsrc\s*=\s*)(["'])([^"']*)(\2)""",
+    re.IGNORECASE,
+)
+
+
+def _map_outside_code(text: str, fn: Callable[[str], str]) -> str:
+    """Apply ``fn`` outside fenced and inline code."""
+    pieces = (text or "").split("```")
+    out: list[str] = []
+    for index, piece in enumerate(pieces):
+        if index % 2 == 1:
+            out.append(piece)
+            continue
+        bits = piece.split("`")
+        mapped = [
+            fn(bit) if bit_index % 2 == 0 else bit
+            for bit_index, bit in enumerate(bits)
+        ]
+        out.append("`".join(mapped))
+    return "```".join(out)
+
+
+def _rewrite_html_images(text: str, url_for: Callable[[str], str]) -> str:
+    """Point relative ``<img src>`` at a share URL and apply width/height."""
+
+    def rewrite_tag(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        src_match = _HTML_IMG_SRC_RE.search(tag)
+        if src_match:
+            inner = html.unescape(src_match.group(3).strip())
+            if not _is_passthrough_asset(inner):
+                url = url_for(inner)
+                tag = tag[: src_match.start(3)] + url + tag[src_match.end(3) :]
+        return _inject_img_size_style(tag)
+
+    def rewrite_chunk(chunk: str) -> str:
+        parts = re.split(r"(<!--.*?-->)", chunk, flags=re.DOTALL)
+        return "".join(
+            part if index % 2 == 1 else _HTML_IMG_TAG_RE.sub(rewrite_tag, part)
+            for index, part in enumerate(parts)
+        )
+
+    return _map_outside_code(text, rewrite_chunk)
+
+
 def rewrite_md_assets_for_share(
     text: str,
     token: str,
@@ -866,7 +978,18 @@ def rewrite_md_assets_for_share(
             return f"![{alt}](<{url}>)"
         return f"![{alt}]({url})"
 
-    return re.sub(r"!\[([^\]]*)\]\(([^)\n]+)\)", repl, text or "")
+    rewritten = re.sub(r"!\[([^\]]*)\]\(([^)\n]+)\)", repl, text or "")
+
+    def share_url(inner: str) -> str:
+        if note_name:
+            return (
+                f"/s/{quote(token, safe='')}/raw"
+                f"?note={quote(note_name, safe='')}"
+                f"&path={quote(inner, safe='')}"
+            )
+        return f"/s/{quote(token, safe='')}/raw?path={quote(inner, safe='')}"
+
+    return _rewrite_html_images(rewritten, share_url)
 
 
 # Obsidian-style: [[Note]], [[Note|alias]], [[Note#Heading]], [[#Heading]], [[#Heading|alias]]
@@ -1403,7 +1526,15 @@ def rewrite_md_assets_for_note_share(
             return f"![{alt}](<{url}>)"
         return f"![{alt}]({url})"
 
-    return re.sub(r"!\[([^\]]*)\]\(([^)\n]+)\)", repl, text or "")
+    rewritten = re.sub(r"!\[([^\]]*)\]\(([^)\n]+)\)", repl, text or "")
+    return _rewrite_html_images(
+        rewritten,
+        lambda inner: (
+            f"/s/{quote(token, safe='')}/raw"
+            f"?doc={quote(doc_path, safe='')}"
+            f"&path={quote(inner, safe='')}"
+        ),
+    )
 
 
 def prepare_note_share_markdown(

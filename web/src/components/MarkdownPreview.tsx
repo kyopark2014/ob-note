@@ -2,6 +2,7 @@ import {
   Children,
   isValidElement,
   useRef,
+  type CSSProperties,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -127,6 +128,114 @@ export function resolveNoteAssetPath(notePath: string, src: string): string {
   return out.join("/");
 }
 
+/** Size carried on a GitHub `<img>` after it is turned into a markdown image. */
+const IMAGE_SIZE_HINT = "#__obimg=";
+
+/** `700` → `700px`. Percent and `px` are kept. Other values are ignored. */
+function cssLength(value: string | null | undefined): string | null {
+  const raw = (value || "").trim();
+  if (!raw) return null;
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return `${raw}px`;
+  if (/^\d+(?:\.\d+)?px$/i.test(raw)) return `${raw.slice(0, -2)}px`;
+  if (/^\d+(?:\.\d+)?%$/.test(raw)) return raw;
+  return null;
+}
+
+function decodeBasicEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function readHtmlAttr(attrs: string, name: string): string | null {
+  const re = new RegExp(
+    `\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\\\`]+))`,
+    "i",
+  );
+  const match = attrs.match(re);
+  if (!match) return null;
+  const value = match[1] ?? match[2] ?? match[3];
+  return value == null ? null : decodeBasicEntities(value);
+}
+
+export function splitGithubImageSrc(src: string): {
+  src: string;
+  width?: string;
+  height?: string;
+} {
+  const at = src.lastIndexOf(IMAGE_SIZE_HINT);
+  if (at < 0) return { src };
+  const params = new URLSearchParams(src.slice(at + IMAGE_SIZE_HINT.length));
+  const width = cssLength(params.get("w"));
+  const height = cssLength(params.get("h"));
+  return {
+    src: src.slice(0, at),
+    width: width || undefined,
+    height: height || undefined,
+  };
+}
+
+/** Even segments are outside `delimiter` and are passed to `fn`. */
+function mapOutsideDelimiter(
+  text: string,
+  delimiter: string,
+  fn: (chunk: string) => string,
+): string {
+  return text
+    .split(delimiter)
+    .map((part, index) => (index % 2 === 0 ? fn(part) : part))
+    .join(delimiter);
+}
+
+/** Odd segments are matches of `pattern` (must include a capturing group) and are kept. */
+function mapOutsidePattern(
+  text: string,
+  pattern: RegExp,
+  fn: (chunk: string) => string,
+): string {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const splitter = new RegExp(`(${pattern.source})`, flags);
+  return text
+    .split(splitter)
+    .map((part, index) => (index % 2 === 0 ? fn(part) : part))
+    .join("");
+}
+
+/**
+ * GitHub-style images:
+ *   <img width="700" alt="image" src="img.png" />
+ * Raw HTML is not rendered; convert these tags to markdown images and keep
+ * width/height on a fragment the img component strips before loading.
+ */
+export function expandGithubImages(text: string): string {
+  const convert = (chunk: string) =>
+    chunk.replace(/<img\b([^>]*?)\/?>/gi, (full, attrs: string) => {
+      const src = readHtmlAttr(attrs, "src")?.trim();
+      if (!src) return full;
+      const alt = (readHtmlAttr(attrs, "alt") || "").replace(/[\[\]]/g, "");
+      const width = cssLength(readHtmlAttr(attrs, "width"));
+      const height = cssLength(readHtmlAttr(attrs, "height"));
+      let dest = src;
+      if (width || height) {
+        const params = new URLSearchParams();
+        if (width) params.set("w", width);
+        if (height) params.set("h", height);
+        dest = `${src}${IMAGE_SIZE_HINT}${params.toString()}`;
+      }
+      const href = /[\s()]/.test(dest) ? `<${dest}>` : dest;
+      return `![${alt}](${href})`;
+    });
+
+  return mapOutsideDelimiter(text, "```", (outsideFence) =>
+    mapOutsideDelimiter(outsideFence, "`", (outsideInline) =>
+      mapOutsidePattern(outsideInline, /<!--[\s\S]*?-->/, convert),
+    ),
+  );
+}
+
 /** CommonMark rejects destinations with raw spaces unless wrapped in <...>. */
 function normalizeMdMediaDestinations(text: string): string {
   return text.replace(/!\[([^\]]*)\]\(([^)\n]+)\)/g, (full, alt: string, dest: string) => {
@@ -186,7 +295,9 @@ type Props = {
 };
 
 export function MarkdownPreview({ content, notePath, onWikiClick }: Props) {
-  const expanded = normalizeMdMediaDestinations(expandWikiLinks(content));
+  const expanded = normalizeMdMediaDestinations(
+    expandWikiLinks(expandGithubImages(content)),
+  );
   const paneRef = useRef<HTMLDivElement>(null);
   const uniqueSlug = makeUniqueSlugger();
 
@@ -264,16 +375,22 @@ export function MarkdownPreview({ content, notePath, onWikiClick }: Props) {
     },
     img({ src, alt }) {
       if (!src) return null;
+      const sized = splitGithubImageSrc(src);
+      const realSrc = sized.src;
+      const style: CSSProperties = {};
+      if (sized.width) style.width = sized.width;
+      if (sized.height) style.height = sized.height;
+      const styleProp = sized.width || sized.height ? style : undefined;
       if (
-        src.startsWith("http://") ||
-        src.startsWith("https://") ||
-        src.startsWith("data:") ||
-        src.startsWith("/")
+        realSrc.startsWith("http://") ||
+        realSrc.startsWith("https://") ||
+        realSrc.startsWith("data:") ||
+        realSrc.startsWith("/")
       ) {
-        return <img src={src} alt={alt || ""} />;
+        return <img src={realSrc} alt={alt || ""} style={styleProp} />;
       }
-      const resolved = notePath ? resolveNoteAssetPath(notePath, src) : src;
-      return <img src={api.rawUrl(resolved)} alt={alt || ""} />;
+      const resolved = notePath ? resolveNoteAssetPath(notePath, realSrc) : realSrc;
+      return <img src={api.rawUrl(resolved)} alt={alt || ""} style={styleProp} />;
     },
     pre({ children }) {
       const only = Children.count(children) === 1 ? Children.only(children) : null;
