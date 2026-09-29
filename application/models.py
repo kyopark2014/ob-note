@@ -39,6 +39,10 @@ MODEL_NAMES: list[str] = [
 
 # One profile per display name (region is informational; InvokeHarness uses modelId).
 _MODEL_PROFILES: dict[str, dict[str, Any]] = {
+    "Claude 5.5 Sonnet": {
+        "model_type": "claude",
+        "model_id": "global.anthropic.claude-sonnet-5-5",
+    },
     "Claude 5.0 Sonnet": {
         "model_type": "claude",
         "model_id": "us.anthropic.claude-sonnet-5",
