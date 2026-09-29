@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ HIDDEN_SKIP = {".git", ".keep", ".gitkeep"}
 # Empty folders need a marker object so they survive S3 sync / tree rebuild.
 FOLDER_KEEP_NAME = ".keep"
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+MAX_VIDEO_UPLOAD_BYTES = 200 * 1024 * 1024
 TEXT_VIEWER_EXTENSIONS = {
     ".md",
     ".markdown",
@@ -59,6 +61,19 @@ INLINE_BINARY_EXTENSIONS = {
     ".webp",
     ".svg",
     ".pdf",
+    ".mp4",
+    ".m4v",
+    ".webm",
+}
+VIDEO_EXTENSIONS = {
+    ".mp4",
+    ".m4v",
+    ".webm",
+}
+VIDEO_MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
 }
 TEXT_VIEWER_MAX_BYTES = 2 * 1024 * 1024
 ALLOWED_IMAGE_TYPES = {
@@ -100,12 +115,26 @@ ALLOWED_UPLOAD_SUFFIXES = {
     ".pptx",
     ".xls",
     ".xlsx",
+    ".mp4",
+    ".m4v",
+    ".webm",
 }
+
+
+def media_type_for_name(name: str) -> str:
+    """MIME type for inline playback. mp4 must not fall through to application/mp4."""
+    ext = Path(name).suffix.lower()
+    if ext in VIDEO_MEDIA_TYPES:
+        return VIDEO_MEDIA_TYPES[ext]
+    media, _ = mimetypes.guess_type(name)
+    return media or "application/octet-stream"
 
 
 class WriteBody(BaseModel):
     path: str = Field(..., min_length=1, max_length=1024)
     content: str = ""
+    # Editor save: H1 becomes the filename. Same note_id, old path removed.
+    sync_filename: bool = False
 
 
 class AppendBody(BaseModel):
@@ -379,8 +408,7 @@ def read_file(request: Request, path: str) -> dict:
 def raw_file(request: Request, path: str) -> Response:
     require_user_id(request)
     target = _require_local_file(path)
-    media, _ = mimetypes.guess_type(str(target))
-    return FileResponse(target, media_type=media or "application/octet-stream")
+    return FileResponse(target, media_type=media_type_for_name(target.name))
 
 
 @router.get("/view")
@@ -410,19 +438,17 @@ def view_vault_file(
     if force_download or (
         ext not in TEXT_VIEWER_EXTENSIONS and ext not in INLINE_BINARY_EXTENSIONS
     ):
-        media, _ = mimetypes.guess_type(str(target))
         return FileResponse(
             target,
-            media_type=media or "application/octet-stream",
+            media_type=media_type_for_name(name),
             filename=name,
             content_disposition_type="attachment",
         )
 
     if ext in INLINE_BINARY_EXTENSIONS:
-        media, _ = mimetypes.guess_type(str(target))
         return FileResponse(
             target,
-            media_type=media or "application/octet-stream",
+            media_type=media_type_for_name(name),
             filename=name,
             content_disposition_type="inline",
         )
@@ -466,8 +492,12 @@ async def upload_file(
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
 
     data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File too large (max 15MB)")
+    size_limit = (
+        MAX_VIDEO_UPLOAD_BYTES if suffix in VIDEO_EXTENSIONS else MAX_UPLOAD_BYTES
+    )
+    if len(data) > size_limit:
+        limit_mb = size_limit // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"File too large (max {limit_mb}MB)")
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
 
@@ -488,35 +518,118 @@ async def upload_file(
         "ok": True,
         "path": path,
         "size": len(data),
-        "content_type": content_type or mimetypes.guess_type(str(target))[0],
+        "content_type": content_type or media_type_for_name(target.name),
         "note_id": (note_row or {}).get("note_id"),
         "created": (note_row or {}).get("created"),
     }
 
 
+_FILENAME_BAD_RE = re.compile(r'[\\/:*?"<>|#]')
+_H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _extract_markdown_h1(content: str) -> str | None:
+    """First ATX H1, skipping YAML frontmatter. ``None`` when there is no H1."""
+    body = content or ""
+    if body.startswith("---\n") or body.startswith("---\r\n"):
+        end = body.find("\n---", 3)
+        if end >= 0:
+            after = body.find("\n", end + 4)
+            body = body[after + 1 :] if after >= 0 else ""
+    match = _H1_RE.search(body)
+    if not match:
+        return None
+    title = match.group(1).strip()
+    return title or None
+
+
+def _sanitize_note_stem(title: str) -> str:
+    cleaned = _FILENAME_BAD_RE.sub("", title or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()[:120]
+    return cleaned or "Untitled"
+
+
+def _alloc_sibling_md(rel_path: str, stem: str) -> str:
+    """``parent/{stem}.md``, or ``{stem} N.md`` when a different sibling exists."""
+    rel = rel_path.replace("\\", "/").strip("/")
+    parent = str(Path(rel).parent).replace("\\", "/")
+    if parent == ".":
+        parent = ""
+    root = vault_backend.vault_root()
+    folder = root / parent if parent else root
+    for n in range(1, 501):
+        name = f"{stem}.md" if n == 1 else f"{stem} {n}.md"
+        candidate = f"{parent}/{name}" if parent else name
+        if candidate == rel or not (folder / name).exists():
+            return candidate
+    raise HTTPException(status_code=409, detail="Could not allocate a unique note name")
+
+
+def _retitle_rel(src_rel: str, content: str) -> str:
+    """Return the vault path the note should occupy after an H1 retitle."""
+    if not notes_db.is_markdown_path(src_rel):
+        return src_rel
+    title = _extract_markdown_h1(content)
+    if not title:
+        return src_rel
+    stem = _sanitize_note_stem(title)
+    if stem == Path(src_rel).stem:
+        return src_rel
+    return _alloc_sibling_md(src_rel, stem)
+
+
 @router.put("/write")
 def write_file(request: Request, body: WriteBody) -> dict:
     require_user_id(request)
+    src_rel = body.path.replace("\\", "/").strip("/")
     try:
-        target = vault_backend.resolve_vault_path(body.path)
+        src_target = vault_backend.resolve_vault_path(src_rel)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    if target.suffix.lower() == "" and not body.path.endswith(".md"):
-        # allow writing dirs? no
-        pass
+
+    text = body.content
+    final_rel = _retitle_rel(src_rel, text) if body.sync_filename else src_rel
+    try:
+        target = vault_backend.resolve_vault_path(final_rel)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(body.content, encoding="utf-8")
+    target.write_text(text, encoding="utf-8")
+
+    renamed_from: str | None = None
+    if final_rel != src_rel:
+        renamed_from = src_rel
+        if vault_backend.backend_mode() == "s3":
+            # Queue the old-key delete before unlinking so a pull cannot
+            # download Untitled.md back while this request is still running.
+            vault_sync.enqueue_delete(src_rel)
+            vault_sync.enqueue_put(final_rel)
+            vault_sync.schedule_flush_pending(reconcile_casing=True)
+        if src_target.is_file() and src_target.resolve() != target.resolve():
+            src_target.unlink()
+            logger.info("note retitle removed %s -> %s", src_rel, final_rel)
+
     note_row = None
-    if notes_db.is_markdown_path(body.path):
-        note_row = notes_db.on_note_written(body.path, content=body.content)
-        vault_index.update_note(body.path)
+    if notes_db.is_markdown_path(final_rel):
+        if renamed_from:
+            # Move the existing row (Untitled's note_id) onto the new path and
+            # drop any duplicate row that was registered under the new name.
+            note_row = notes_db.rebind_note_path(src_rel, final_rel, content=text)
+            vault_index.remove_note(src_rel)
+        else:
+            note_row = notes_db.on_note_written(final_rel, content=text)
+        vault_index.update_note(final_rel)
         vault_index.rebuild_index()
-    if vault_backend.backend_mode() == "s3":
-        vault_backend.sync_to_s3(body.path)
-    meta = vault_index.get_meta(body.path)
+    if renamed_from:
+        vault_share.rewrite_share_paths(src_rel, final_rel)
+        vault_order.notify_renamed(src_rel, final_rel)
+    elif vault_backend.backend_mode() == "s3":
+        vault_backend.sync_to_s3(final_rel)
+    meta = vault_index.get_meta(final_rel)
     return {
         "ok": True,
-        "path": body.path,
+        "path": final_rel,
+        "renamed_from": renamed_from,
         "word_count": meta.word_count if meta else None,
         "char_count": meta.char_count if meta else None,
         "note_id": (note_row or {}).get("note_id"),

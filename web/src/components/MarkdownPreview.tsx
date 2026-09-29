@@ -18,6 +18,12 @@ import { MermaidBlock } from "./MermaidBlock";
  * Target may be empty only when a heading fragment is present (`[[#…]]`).
  */
 const WIKI_RE = /(!)?\[\[([^\]|]*?)(?:\|([^\]]+))?\]\]/g;
+const VIDEO_EXT = /\.(mp4|m4v|webm)$/i;
+
+export function isVideoAssetPath(src: string): boolean {
+  const path = src.trim().replace(/^<|>$/g, "").split("?")[0].split("#")[0];
+  return VIDEO_EXT.test(path);
+}
 
 /** Hash prefix — relative URLs survive react-markdown's defaultUrlTransform
  *  (custom schemes like wiki:// are stripped to ""). */
@@ -45,7 +51,15 @@ function expandWikiLinks(text: string): string {
     if (!note) return _m as string;
 
     const label = ((alias as string | undefined) || note).trim();
-    if (embed) return `*(embed: ${label})*`;
+    if (embed) {
+      const filePart = (hashIdx >= 0 ? note : target).split("#")[0].trim();
+      if (isVideoAssetPath(filePart)) {
+        const alt = (label || filePart.split("/").pop() || "video").replace(/[\[\]]/g, "");
+        const dest = /[\s()]/.test(filePart) ? `<${filePart}>` : filePart;
+        return `![${alt}](${dest})`;
+      }
+      return `*(embed: ${label})*`;
+    }
 
     // Cross-note: open via wiki resolver. Heading fragment is ignored for now
     // (same-doc TOC uses [[#Heading]] → #slug path above).
@@ -236,6 +250,49 @@ export function expandGithubImages(text: string): string {
   );
 }
 
+/** `<video src="clip.mp4">` becomes a markdown image so the player path is one. */
+export function expandHtmlVideos(text: string): string {
+  const convert = (chunk: string) =>
+    chunk.replace(
+      /<video\b([^>]*)>([\s\S]*?)<\/video>|<video\b([^>]*?)\/?>/gi,
+      (
+        full,
+        attrs1: string | undefined,
+        inner: string | undefined,
+        attrs2: string | undefined,
+      ) => {
+        const attrs = attrs1 || attrs2 || "";
+        let src = readHtmlAttr(attrs, "src")?.trim();
+        if (!src && inner) {
+          const source = inner.match(/<source\b([^>]*?)\/?>/i);
+          if (source) src = readHtmlAttr(source[1], "src")?.trim();
+        }
+        if (!src || !isVideoAssetPath(src)) return full;
+        const dest = /[\s()]/.test(src) ? `<${src}>` : src;
+        return `![video](${dest})`;
+      },
+    );
+
+  return mapOutsideDelimiter(text, "```", (outsideFence) =>
+    mapOutsideDelimiter(outsideFence, "`", (outsideInline) =>
+      mapOutsidePattern(outsideInline, /<!--[\s\S]*?-->/, convert),
+    ),
+  );
+}
+
+function NoteVideo({ src, title }: { src: string; title?: string }) {
+  return (
+    <video
+      className="note-video"
+      controls
+      playsInline
+      preload="metadata"
+      src={src}
+      title={title || undefined}
+    />
+  );
+}
+
 /** CommonMark rejects destinations with raw spaces unless wrapped in <...>. */
 function normalizeMdMediaDestinations(text: string): string {
   return text.replace(/!\[([^\]]*)\]\(([^)\n]+)\)/g, (full, alt: string, dest: string) => {
@@ -296,7 +353,7 @@ type Props = {
 
 export function MarkdownPreview({ content, notePath, onWikiClick }: Props) {
   const expanded = normalizeMdMediaDestinations(
-    expandWikiLinks(expandGithubImages(content)),
+    expandWikiLinks(expandHtmlVideos(expandGithubImages(content))),
   );
   const paneRef = useRef<HTMLDivElement>(null);
   const uniqueSlug = makeUniqueSlugger();
@@ -381,15 +438,20 @@ export function MarkdownPreview({ content, notePath, onWikiClick }: Props) {
       if (sized.width) style.width = sized.width;
       if (sized.height) style.height = sized.height;
       const styleProp = sized.width || sized.height ? style : undefined;
+      const video = isVideoAssetPath(realSrc);
       if (
         realSrc.startsWith("http://") ||
         realSrc.startsWith("https://") ||
         realSrc.startsWith("data:") ||
         realSrc.startsWith("/")
       ) {
+        if (video) return <NoteVideo src={realSrc} title={alt} />;
         return <img src={realSrc} alt={alt || ""} style={styleProp} />;
       }
       const resolved = notePath ? resolveNoteAssetPath(notePath, realSrc) : realSrc;
+      if (video || isVideoAssetPath(resolved)) {
+        return <NoteVideo src={api.rawUrl(resolved)} title={alt} />;
+      }
       return <img src={api.rawUrl(resolved)} alt={alt || ""} style={styleProp} />;
     },
     pre({ children }) {

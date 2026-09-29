@@ -32,10 +32,24 @@ IMAGE_SUFFIXES = {
     ".heic",
     ".avif",
 }
+VIDEO_SUFFIXES = {
+    ".mp4",
+    ".m4v",
+    ".webm",
+}
+MEDIA_SUFFIXES = IMAGE_SUFFIXES | VIDEO_SUFFIXES
 
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\n]+)\)")
 _WIKI_IMAGE_RE = re.compile(r"!\[\[([^\]|#]+)(?:\|[^\]]+)?\]\]")
 _HTML_IMG_RE = re.compile(r"""<img[^>]+src=["']([^"']+)["']""", re.IGNORECASE)
+_HTML_VIDEO_RE = re.compile(
+    r"""<video\b[^>]*\bsrc=["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+_HTML_SOURCE_RE = re.compile(
+    r"""<source\b[^>]*\bsrc=["']([^"']+)["']""",
+    re.IGNORECASE,
+)
 
 
 def _norm_rel(path: str) -> str:
@@ -90,7 +104,7 @@ def extract_relative_image_refs(text: str) -> list[str]:
         if key in seen:
             return
         suffix = Path(dest.split("?", 1)[0].split("#", 1)[0]).suffix.lower()
-        if suffix and suffix not in IMAGE_SUFFIXES:
+        if suffix and suffix not in MEDIA_SUFFIXES:
             return
         if not suffix:
             # Wiki embeds sometimes omit extension; still allow basename lookups later
@@ -104,6 +118,10 @@ def extract_relative_image_refs(text: str) -> list[str]:
     for match in _WIKI_IMAGE_RE.finditer(text or ""):
         add(match.group(1))
     for match in _HTML_IMG_RE.finditer(text or ""):
+        add(match.group(1))
+    for match in _HTML_VIDEO_RE.finditer(text or ""):
+        add(match.group(1))
+    for match in _HTML_SOURCE_RE.finditer(text or ""):
         add(match.group(1))
     return found
 
@@ -121,7 +139,7 @@ def _same_folder_basename(ref: str) -> Optional[str]:
     if cleaned in {".", ".."}:
         return None
     suffix = Path(cleaned).suffix.lower()
-    if suffix and suffix not in IMAGE_SUFFIXES:
+    if suffix and suffix not in MEDIA_SUFFIXES:
         return None
     if not suffix:
         return None

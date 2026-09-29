@@ -141,11 +141,21 @@ export const api = {
     request<{ root: string; mode: string; children: TreeNode[] }>("/files/tree"),
   readFile: (path: string) =>
     request<FilePayload>(`/files/read?path=${encodeURIComponent(path)}`),
-  writeFile: (path: string, content: string) =>
-    request<{ ok: boolean; path: string; word_count?: number; char_count?: number }>(
-      "/files/write",
-      { method: "PUT", body: JSON.stringify({ path, content }) },
-    ),
+  writeFile: (path: string, content: string, opts?: { syncFilename?: boolean }) =>
+    request<{
+      ok: boolean;
+      path: string;
+      renamed_from?: string | null;
+      word_count?: number;
+      char_count?: number;
+    }>("/files/write", {
+      method: "PUT",
+      body: JSON.stringify({
+        path,
+        content,
+        sync_filename: Boolean(opts?.syncFilename),
+      }),
+    }),
   mkdir: (path: string) =>
     request<{ ok: boolean }>("/files/mkdir", {
       method: "POST",

@@ -314,20 +314,61 @@ def on_note_renamed(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
         return None
 
 
+def _drop_note_ids(conn: sqlite3.Connection, note_ids: list[str]) -> list[str]:
+    """Delete registry rows by id. Returns the ids that were removed."""
+    dropped: list[str] = []
+    for nid in note_ids:
+        if not nid:
+            continue
+        cur = conn.execute("DELETE FROM notes WHERE note_id = ?", (nid,))
+        if cur.rowcount:
+            dropped.append(nid)
+    return dropped
+
+
+def _forget_chat(note_ids: list[str]) -> None:
+    if not note_ids:
+        return
+    try:
+        from application import agent_chat_db
+
+        agent_chat_db.delete_messages_for_notes(note_ids)
+    except Exception:
+        logger.exception("agent_chat cleanup after note drop failed")
+
+
 def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
-    """Rename a single note path, or remap all notes under a folder prefix."""
+    """Rename a single note path, or remap all notes under a folder prefix.
+
+    The original ``note_id`` is kept. A second row already registered at the
+    destination (the duplicate that appears when a retitle inserts a new note
+    instead of moving Untitled) is removed so only one row remains.
+    """
     src = _norm_rel(from_path)
     dst = _norm_rel(to_path)
     if not src or not dst or src == dst:
         return get_by_path(dst) if dst else None
 
     now = _utc_now()
+    dropped: list[str] = []
+    moved: Optional[dict[str, Any]] = None
     with _lock:
         conn = _connect()
         try:
             _ensure_schema(conn)
             row = conn.execute("SELECT * FROM notes WHERE path = ?", (src,)).fetchone()
             if row:
+                dest = conn.execute(
+                    "SELECT * FROM notes WHERE path = ?", (dst,)
+                ).fetchone()
+                if dest is not None and dest["note_id"] != row["note_id"]:
+                    logger.info(
+                        "notes_db drop duplicate path=%s note_id=%s (keep %s)",
+                        dst,
+                        dest["note_id"],
+                        row["note_id"],
+                    )
+                    dropped.extend(_drop_note_ids(conn, [dest["note_id"]]))
                 title = row["title"]
                 if Path(src).stem != Path(dst).stem and title == Path(src).stem:
                     title = Path(dst).stem
@@ -339,34 +380,75 @@ def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
                     """,
                     (dst, title, now, row["note_id"]),
                 )
+                # Path is UNIQUE, so this only hits a raced extra row.
+                extra = conn.execute(
+                    "SELECT note_id FROM notes WHERE path = ? AND note_id != ?",
+                    (src, row["note_id"]),
+                ).fetchall()
+                dropped.extend(_drop_note_ids(conn, [r["note_id"] for r in extra]))
                 conn.commit()
-                out = _row_to_dict(
+                moved = _row_to_dict(
                     conn.execute(
                         "SELECT * FROM notes WHERE note_id = ?", (row["note_id"],)
                     ).fetchone()
                 )
                 _schedule_persist()
-                return out
-
-            # Folder rename: remap descendants.
-            prefix = src + "/"
-            rows = conn.execute(
-                "SELECT note_id, path FROM notes WHERE path LIKE ?",
-                (prefix + "%",),
-            ).fetchall()
-            for r in rows:
-                old = r["path"]
-                new_path = dst + old[len(src) :]
-                conn.execute(
-                    "UPDATE notes SET path = ?, updated_at = ? WHERE note_id = ?",
-                    (new_path, now, r["note_id"]),
-                )
-            conn.commit()
-            if rows:
-                _schedule_persist()
-            return None
+            else:
+                # Folder rename: remap descendants.
+                prefix = src + "/"
+                rows = conn.execute(
+                    "SELECT note_id, path FROM notes WHERE path LIKE ?",
+                    (prefix + "%",),
+                ).fetchall()
+                for r in rows:
+                    old = r["path"]
+                    new_path = dst + old[len(src) :]
+                    clash = conn.execute(
+                        "SELECT note_id FROM notes WHERE path = ?", (new_path,)
+                    ).fetchone()
+                    if clash is not None and clash["note_id"] != r["note_id"]:
+                        dropped.extend(_drop_note_ids(conn, [clash["note_id"]]))
+                    conn.execute(
+                        "UPDATE notes SET path = ?, updated_at = ? WHERE note_id = ?",
+                        (new_path, now, r["note_id"]),
+                    )
+                conn.commit()
+                if rows:
+                    _schedule_persist()
         finally:
             conn.close()
+    _forget_chat(dropped)
+    return moved
+
+
+def rebind_note_path(
+    from_path: str,
+    to_path: str,
+    *,
+    content: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Move the note row from ``from_path`` to ``to_path`` and refresh its title.
+
+    Used when the editor retitles a note (Untitled → real name). The same
+    ``note_id`` is preserved and any leftover row on the old path is removed.
+    """
+    src = _norm_rel(from_path)
+    dst = _norm_rel(to_path)
+    if not dst or not is_markdown_path(dst):
+        return None
+    if src and src != dst:
+        rename_note(src, dst)
+    try:
+        row = upsert_note(dst, content=content)
+    except Exception:
+        logger.exception("notes_db rebind failed %s -> %s", src, dst)
+        row = get_by_path(dst)
+    if src and src != dst:
+        leftover = get_by_path(src)
+        kept = (row or {}).get("note_id")
+        if leftover and leftover.get("note_id") != kept:
+            delete_note(src)
+    return row
 
 
 def delete_note(path: str) -> int:

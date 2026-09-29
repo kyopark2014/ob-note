@@ -437,6 +437,65 @@ def _delete_object(client, bucket: str, prefix: str, rel: str) -> bool:
     return True
 
 
+def _queued_delete_for(rel: str) -> bool:
+    """True when the live queue already has a delete for this path.
+
+    A flush snapshot can still contain an older put. Uploading it after a
+    rename queued a delete is what resurrected ``Untitled.md`` on S3.
+    """
+    cleaned = (rel or "").replace("\\", "/").lstrip("/")
+    if not cleaned:
+        return False
+    with _queue_lock:
+        ops = list(_load_local_queue().get("ops") or [])
+    return any(
+        op.get("op") == "delete" and (op.get("path") or "").strip() == cleaned for op in ops
+    )
+
+
+def _commit_flushed_ops(snapshot: list[dict[str, Any]], failed: list[dict[str, Any]]) -> None:
+    """Drop ops this flush finished, and keep anything enqueued while it ran.
+
+    Replacing the queue with ``failed`` alone used to erase a rename's delete
+    of the old filename when that delete landed mid-flush.
+    """
+    failed_ids = {id(op) for op in failed}
+    succeeded = [op for op in snapshot if id(op) not in failed_ids]
+    succ_ids = {op.get("id") for op in succeeded if op.get("id")}
+    succ_idless = [op for op in succeeded if not op.get("id")]
+
+    def _same(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        return (
+            a.get("op") == b.get("op")
+            and (a.get("path") or "") == (b.get("path") or "")
+            and a.get("ts") == b.get("ts")
+        )
+
+    with _queue_lock:
+        current = list(_load_local_queue().get("ops") or [])
+        kept: list[dict[str, Any]] = []
+        kept_ids: set[str] = set()
+        for op in current:
+            oid = op.get("id")
+            if oid and oid in succ_ids:
+                continue
+            if not oid and any(_same(op, done) for done in succ_idless):
+                continue
+            kept.append(op)
+            if oid:
+                kept_ids.add(oid)
+        for op in failed:
+            oid = op.get("id")
+            if oid and oid not in kept_ids:
+                kept.append(op)
+                kept_ids.add(oid)
+            elif not oid and not any(_same(op, item) for item in kept):
+                kept.append(op)
+        data = {"version": 1, "ops": kept}
+        _save_local_queue(data)
+        _mirror_pending_to_s3(data)
+
+
 def flush_pending_to_s3(
     *,
     on_progress: Optional[Any] = None,
@@ -507,15 +566,30 @@ def flush_pending_to_s3(
                 if not rel:
                     continue
                 if kind == "put":
-                    ok = _upload_file(
-                        client, bucket, prefix, root, rel, casing_map=casing_map
-                    )
+                    if _queued_delete_for(rel):
+                        logger.info("Skipping put superseded by delete: %s", rel)
+                        ok = True
+                    else:
+                        ok = _upload_file(
+                            client, bucket, prefix, root, rel, casing_map=casing_map
+                        )
                 elif kind == "delete":
-                    # Delete requested path and S3-canonical casing of the same path
-                    ok = _delete_object(client, bucket, prefix, rel)
-                    canon = _remap_rel_to_s3_casing(rel, casing_map)
-                    if canon != rel.replace("\\", "/").lstrip("/"):
-                        _delete_object(client, bucket, prefix, canon)
+                    # Delete the requested path, plus casing and NFC/NFD spellings.
+                    # A Korean folder stored under the other normalization kept
+                    # Untitled.md after the editor retitled the note.
+                    ok = True
+                    seen: set[str] = set()
+                    for cand in _path_key_candidates(rel):
+                        variants = [cand]
+                        canon = _remap_rel_to_s3_casing(cand, casing_map)
+                        if canon not in variants:
+                            variants.append(canon)
+                        for variant in variants:
+                            if variant in seen:
+                                continue
+                            seen.add(variant)
+                            if not _delete_object(client, bucket, prefix, variant):
+                                ok = False
                 else:
                     ok = True
                 if ok:
@@ -526,10 +600,7 @@ def flush_pending_to_s3(
                 logger.exception("Pending op failed: %s", op)
                 remaining.append(op)
 
-        new_data = {"version": 1, "ops": remaining}
-        with _queue_lock:
-            _save_local_queue(new_data)
-            _mirror_pending_to_s3(new_data)
+        _commit_flushed_ops(ops, remaining)
 
         logger.info(
             "Flushed %d pending S3 ops (%d remaining)", flushed, len(remaining)

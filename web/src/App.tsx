@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { api } from "./api";
 import { FileTree, acceptDrop, hasExternalFileDrag, isVaultMoveDrag } from "./components/FileTree";
 import {
@@ -23,6 +23,7 @@ import {
 } from "./components/FolderContextMenu";
 import { TabContextMenu, type TabContextMenuState, type TabMenuAction } from "./components/TabContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
+import { VideoPreview } from "./components/VideoPreview";
 import { MarkdownPreview } from "./components/MarkdownPreview";
 import {
   AppearanceIcon,
@@ -74,7 +75,9 @@ import {
 } from "./treeSettings";
 import {
   getShowImages,
+  isCompanionMediaFileName,
   isImageFileName,
+  isVideoFileName,
   setShowImages as persistShowImages,
 } from "./viewSettings";
 import {
@@ -157,7 +160,7 @@ function filterTreeForView(nodes: TreeNode[], showImages: boolean): TreeNode[] {
     .filter((n) => {
       if (n.type === "folder") return true;
       if (showImages) return true;
-      return !isImageFileName(n.name);
+      return !isCompanionMediaFileName(n.name);
     });
 }
 
@@ -371,6 +374,38 @@ function extFromImageMime(mime: string): string {
   return map[mime.toLowerCase()] || "png";
 }
 
+function safeUploadBaseName(fileName: string, fallback: string): string {
+  const base = (fileName.split(/[/\\]/).pop() || fallback).replace(/[\\/:*?"<>|#\[\]]/g, "_");
+  return base || fallback;
+}
+
+function allocateUploadPath(parent: string, fileName: string, existing: Set<string>): string {
+  const safe = safeUploadBaseName(fileName, "video.mp4");
+  const join = (name: string) => (parent ? `${parent}/${name}` : name);
+  let path = join(safe);
+  if (!existing.has(path)) {
+    existing.add(path);
+    return path;
+  }
+  const dot = safe.lastIndexOf(".");
+  const stem = dot > 0 ? safe.slice(0, dot) : safe;
+  const ext = dot > 0 ? safe.slice(dot) : "";
+  let i = 2;
+  while (existing.has(join(`${stem}-${i}${ext}`))) i += 1;
+  path = join(`${stem}-${i}${ext}`);
+  existing.add(path);
+  return path;
+}
+
+function isVideoUpload(file: File): boolean {
+  return (
+    isVideoFileName(file.name) ||
+    file.type === "video/mp4" ||
+    file.type === "video/webm" ||
+    file.type === "video/x-m4v"
+  );
+}
+
 function uniqueImagePath(parent: string, ext: string, tree: TreeNode[]): string {
   const existing = new Set(flattenAllPaths(tree));
   let path = "";
@@ -550,21 +585,33 @@ export default function App() {
         await prev;
         // Follow any rename that finished while we waited (stale Old.md → New.md).
         const startPath = resolveLatestPath(path);
-        const parts = startPath.split("/");
+        // Server moves the existing note row (Untitled → H1) and deletes the old file.
+        const written = await api.writeFile(startPath, content, { syncFilename: true });
+        const live = written.path || startPath;
+        if (live !== startPath) {
+          renamedFromRef.current.set(startPath, live);
+          if (
+            activePathRef.current === startPath ||
+            activePathRef.current === path ||
+            !activePathRef.current
+          ) {
+            activePathRef.current = live;
+          }
+          return live;
+        }
+        const parts = live.split("/");
         const parent = parts.slice(0, -1).join("/");
         const currentStem = parts[parts.length - 1]?.replace(/\.md$/i, "") || "";
-        if (safe === currentStem) {
-          await api.writeFile(startPath, content);
-          return startPath;
-        }
-        await api.writeFile(startPath, content);
-        const dest = uniqueNamedPath(parent, safe, currentTree, startPath);
-        if (dest === startPath) return startPath;
-        await api.rename(startPath, dest);
+        if (safe === currentStem) return live;
+        const dest = uniqueNamedPath(parent, safe, currentTree, live);
+        if (dest === live) return live;
+        await api.rename(live, dest);
         renamedFromRef.current.set(startPath, dest);
+        if (live !== startPath) renamedFromRef.current.set(live, dest);
         // Sync ref immediately so concurrent save/read sees the new path before React re-renders.
         if (
           activePathRef.current === startPath ||
+          activePathRef.current === live ||
           activePathRef.current === path ||
           !activePathRef.current
         ) {
@@ -979,8 +1026,9 @@ export default function App() {
     async (path: string): Promise<boolean> => {
       const isMd = /\.md$/i.test(path);
       const isImage = isImageFileName(path);
-      // Notes and images open in the main pane; other binaries stay drag/move-only.
-      if (!isMd && !isImage) return false;
+      const isVideo = isVideoFileName(path);
+      // Notes, images, and videos open in the main pane; other binaries stay drag/move-only.
+      if (!isMd && !isImage && !isVideo) return false;
       const currentPath = activePathRef.current;
       if (
         currentPath &&
@@ -1002,7 +1050,7 @@ export default function App() {
         }
       }
 
-      if (isImage) {
+      if (isImage || isVideo) {
         setFile(null);
         setDraft("");
         setDirty(false);
@@ -1812,15 +1860,19 @@ export default function App() {
           }
         }
 
-        // Moving an image into the tree — keep Images view on so it stays visible.
-        if (isImageFileName(fromPath) && !showImages) {
+        // Moving an image or video into the tree — keep Images view on so it stays visible.
+        if (isCompanionMediaFileName(fromPath) && !showImages) {
           persistShowImages(true);
           setShowImages(true);
         }
 
         await refreshTree();
         // S3 / companion-image moves settle asynchronously; refresh again.
-        if (companionQueued || isImageFileName(fromPath) || isImageFileName(to)) {
+        if (
+          companionQueued ||
+          isCompanionMediaFileName(fromPath) ||
+          isCompanionMediaFileName(to)
+        ) {
           window.setTimeout(() => {
             void refreshTree();
           }, 1200);
@@ -1883,16 +1935,24 @@ export default function App() {
       const images = files.filter(
         (f) => f.type.startsWith("image/") || isImageFileName(f.name),
       );
-      if (!images.length) {
-        void showAlert("이미지 파일만 폴더로 끌어다 놓을 수 있습니다.", "Upload");
+      const videos = files.filter((f) => isVideoUpload(f) && !isImageFileName(f.name));
+      if (!images.length && !videos.length) {
+        void showAlert("이미지 또는 mp4 동영상만 폴더로 끌어다 놓을 수 있습니다.", "Upload");
         return;
       }
       try {
+        const taken = new Set(flattenAllPaths(treeRef.current));
         for (const file of images) {
           const ext =
             extFromImageMime(file.type) ||
             (file.name.includes(".") ? file.name.split(".").pop()!.toLowerCase() : "png");
           const vaultPath = uniqueImagePath(parentPath, ext, treeRef.current);
+          taken.add(vaultPath);
+          const fileName = vaultPath.split("/").pop() || file.name;
+          await api.uploadFile(vaultPath, file, fileName);
+        }
+        for (const file of videos) {
+          const vaultPath = allocateUploadPath(parentPath, file.name, taken);
           const fileName = vaultPath.split("/").pop() || file.name;
           await api.uploadFile(vaultPath, file, fileName);
         }
@@ -1906,6 +1966,66 @@ export default function App() {
       }
     },
     [refreshTree, showAlert, showImages],
+  );
+
+  const insertVideosIntoNote = useCallback(
+    async (videos: File[], insertAt: number | null) => {
+      if (!activePath || !/\.md$/i.test(activePath) || !videos.length) return;
+      const parent = noteParentDir(activePath);
+      const taken = new Set(flattenAllPaths(treeRef.current));
+      const chunks: string[] = [];
+      try {
+        for (const file of videos) {
+          const vaultPath = allocateUploadPath(parent, file.name, taken);
+          const fileName = vaultPath.split("/").pop() || file.name;
+          await api.uploadFile(vaultPath, file, fileName);
+          chunks.push(`![[${fileName}]]`);
+        }
+        if (!chunks.length) return;
+        const md = chunks.join("\n\n");
+        const base = draftRef.current;
+        const next =
+          insertAt == null
+            ? `${base}${base && !base.endsWith("\n") ? "\n\n" : base ? "\n" : ""}${md}\n`
+            : `${base.slice(0, insertAt)}${md}${base.slice(insertAt)}`;
+        setDraft(next);
+        setDirty(true);
+        if (!showImages) {
+          persistShowImages(true);
+          setShowImages(true);
+        }
+        await refreshTree();
+        if (insertAt != null) {
+          requestAnimationFrame(() => {
+            const el = editorRef.current;
+            if (!el) return;
+            const caret = insertAt + md.length;
+            el.focus();
+            el.setSelectionRange(caret, caret);
+          });
+        }
+      } catch (err) {
+        void showAlert(err instanceof Error ? err.message : String(err), "Video upload failed");
+      }
+    },
+    [activePath, refreshTree, showAlert, showImages],
+  );
+
+  const onNoteVideoDrop = useCallback(
+    (e: DragEvent<HTMLDivElement>) => {
+      if (!hasExternalFileDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const videos = Array.from(e.dataTransfer.files || []).filter(isVideoUpload);
+      if (!videos.length) {
+        void showAlert("mp4 동영상만 노트에 넣을 수 있습니다.", "Upload");
+        return;
+      }
+      const ta = editorRef.current;
+      const at = viewMode === "edit" && ta ? ta.selectionStart : null;
+      void insertVideosIntoNote(videos, at);
+    },
+    [insertVideosIntoNote, showAlert, viewMode],
   );
 
   const onFileMenuAction = useCallback(
@@ -2192,7 +2312,7 @@ export default function App() {
   const crumbs = useMemo(() => {
     if (!activePath) return [];
     const parts = activePath.split("/");
-    if (isImageFileName(activePath)) {
+    if (isCompanionMediaFileName(activePath)) {
       return parts;
     }
     const h1 = extractH1(draft);
@@ -2219,7 +2339,7 @@ export default function App() {
       if (node.type === "folder") {
         const filtered = filterTreeForView([node], showImages)[0];
         if (filtered) nodes.push(filtered);
-      } else if (showImages || !isImageFileName(node.name)) {
+      } else if (showImages || !isCompanionMediaFileName(node.name)) {
         nodes.push(node);
       }
     }
@@ -2857,7 +2977,7 @@ export default function App() {
               ))}
             </div>
 
-            {activePath && isImageFileName(activePath) ? (
+            {activePath && isCompanionMediaFileName(activePath) ? (
               <>
                 <div className="toolbar">
                   <div className="breadcrumb">
@@ -2890,10 +3010,14 @@ export default function App() {
                   </div>
                 </div>
                 <div className="content">
-                  <ImagePreview path={activePath} />
+                  {isVideoFileName(activePath) ? (
+                    <VideoPreview path={activePath} />
+                  ) : (
+                    <ImagePreview path={activePath} />
+                  )}
                 </div>
                 <div className="status-bar">
-                  <span>Image</span>
+                  <span>{isVideoFileName(activePath) ? "Video" : "Image"}</span>
                   <span>{activePath.split("/").pop()}</span>
                 </div>
               </>
@@ -2958,7 +3082,14 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                <div className="content">
+                <div
+                  className="content"
+                  onDragOver={(e) => {
+                    if (!hasExternalFileDrag(e)) return;
+                    e.preventDefault();
+                  }}
+                  onDrop={onNoteVideoDrop}
+                >
                   {viewMode === "edit" ? (
                     <div className="editor-pane">
                       <textarea

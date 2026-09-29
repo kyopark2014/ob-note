@@ -1344,8 +1344,11 @@ def prepare_folder_share_note_markdown(
     allowed_paths: Optional[set[str]],
 ) -> str:
     """Wiki (per share permission) + assets for a folder-share note view."""
+    from application.viewer_html import expand_video_markdown
+
+    out = expand_video_markdown(text or "")
     out = rewrite_wiki_links_for_folder_share(
-        text,
+        out,
         token,
         from_path=note_path,
         folder_path=folder_path,
@@ -1546,8 +1549,11 @@ def prepare_note_share_markdown(
     allowed_paths: set[str],
 ) -> str:
     """Wiki links (allowed set) + assets for a single-note public share view."""
+    from application.viewer_html import expand_video_markdown
+
+    out = expand_video_markdown(text or "")
     out = rewrite_wiki_links_for_note_share(
-        text,
+        out,
         token,
         from_path=note_path,
         root_path=root_path,

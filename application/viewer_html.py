@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import html
+import mimetypes
 import re
 import unicodedata
+from pathlib import Path
 from typing import Callable
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 def slugify_heading(text: str) -> str:
@@ -207,8 +210,123 @@ def _simple_markdown_to_html(text: str) -> str:
     return "\n".join(out)
 
 
+_VIDEO_SUFFIXES = {".mp4", ".m4v", ".webm"}
+_VIDEO_MEDIA = {".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm"}
+_WIKI_EMBED_RE = re.compile(r"!\[\[([^\]|#]+?)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]")
+_HTML_VIDEO_RE = re.compile(
+    r"<video\b([^>]*)>(.*?)</video>|<video\b([^>]*)/?>",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_ATTR_RE_TMPL = r"""\b{name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>]+))"""
+
+
+def media_type_for_name(name: str) -> str:
+    """MIME type for vault binaries. mp4 is video/mp4 so browsers can play it."""
+    ext = Path(name).suffix.lower()
+    if ext in _VIDEO_MEDIA:
+        return _VIDEO_MEDIA[ext]
+    media, _ = mimetypes.guess_type(name)
+    return media or "application/octet-stream"
+
+
+def _html_attr(tag: str, name: str) -> str | None:
+    match = re.search(_HTML_ATTR_RE_TMPL.format(name=re.escape(name)), tag, re.IGNORECASE)
+    if not match:
+        return None
+    for group in match.groups():
+        if group is not None:
+            return html.unescape(group)
+    return None
+
+
+def _video_suffix(ref: str) -> str:
+    raw = (ref or "").strip()
+    if raw.startswith("<") and raw.endswith(">"):
+        raw = raw[1:-1].strip()
+    try:
+        raw = unquote(raw)
+    except Exception:
+        pass
+    low = raw.lower()
+    if low.startswith(("javascript:", "data:", "vbscript:")):
+        return ""
+    path = raw
+    if "://" in raw or raw.startswith("/"):
+        split = urlsplit(raw)
+        queried = parse_qs(split.query).get("path")
+        path = queried[0] if queried else split.path
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    return Path(path).suffix.lower()
+
+
+def _map_outside_code(text: str, fn: Callable[[str], str]) -> str:
+    pieces = (text or "").split("```")
+    out: list[str] = []
+    for index, piece in enumerate(pieces):
+        if index % 2 == 1:
+            out.append(piece)
+            continue
+        bits = piece.split("`")
+        mapped = [fn(bit) if bit_index % 2 == 0 else bit for bit_index, bit in enumerate(bits)]
+        out.append("`".join(mapped))
+    return "```".join(out)
+
+
+def expand_video_markdown(text: str) -> str:
+    """Turn ``![[clip.mp4]]`` and ``<video src>`` into markdown images.
+
+    Later HTML rendering promotes those images to ``<video controls>``.
+    Non-video wiki embeds are left unchanged.
+    """
+
+    def convert(chunk: str) -> str:
+        def wiki_repl(match: re.Match[str]) -> str:
+            target = (match.group(1) or "").strip()
+            if _video_suffix(target) not in _VIDEO_SUFFIXES:
+                return match.group(0)
+            alias = (match.group(2) or Path(target).name).strip()
+            alias = alias.replace("[", "").replace("]", "")
+            dest = f"<{target}>" if re.search(r"[\s()]", target) else target
+            return f"![{alias}]({dest})"
+
+        def video_repl(match: re.Match[str]) -> str:
+            attrs = match.group(1) if match.group(1) is not None else (match.group(3) or "")
+            inner = match.group(2) or ""
+            src = _html_attr(attrs, "src")
+            if not src:
+                source = re.search(r"<source\b([^>]*)/?>", inner, re.IGNORECASE)
+                if source:
+                    src = _html_attr(source.group(1), "src")
+            if not src or _video_suffix(src) not in _VIDEO_SUFFIXES:
+                return match.group(0)
+            src = src.strip()
+            dest = f"<{src}>" if re.search(r"[\s()]", src) else src
+            return f"![video]({dest})"
+
+        converted = _WIKI_EMBED_RE.sub(wiki_repl, chunk)
+        return _HTML_VIDEO_RE.sub(video_repl, converted)
+
+    return _map_outside_code(text or "", convert)
+
+
+def promote_video_embeds(html_body: str) -> str:
+    """Replace ``<img>`` tags that point at mp4/webm with a native player."""
+
+    def repl(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        src = _html_attr(tag, "src")
+        if not src or _video_suffix(src) not in _VIDEO_SUFFIXES:
+            return tag
+        safe = html.escape(src.strip(), quote=True)
+        return (
+            f'<video controls playsinline preload="metadata" src="{safe}"></video>'
+        )
+
+    return re.sub(r"<img\b[^>]*>", repl, html_body or "", flags=re.IGNORECASE)
+
+
 def markdown_to_safe_html(text: str) -> str:
-    prepared = linkify_toc_in_markdown(text or "")
+    prepared = linkify_toc_in_markdown(expand_video_markdown(text or ""))
     try:
         import markdown as md_lib  # type: ignore
 
@@ -219,7 +337,7 @@ def markdown_to_safe_html(text: str) -> str:
         )
     except Exception:
         body = _simple_markdown_to_html(prepared)
-    return add_heading_ids(body)
+    return promote_video_embeds(add_heading_ids(body))
 
 
 _MARKDOWN_BODY_CSS = """
@@ -239,10 +357,16 @@ _MARKDOWN_BODY_CSS = """
     }
     .markdown-body p { margin: 0.75em 0; }
     .markdown-body ul, .markdown-body ol { padding-left: 1.5em; }
-    .markdown-body img {
+    .markdown-body img,
+    .markdown-body video {
       max-width: 100%;
       height: auto;
       border-radius: 6px;
+    }
+    .markdown-body video {
+      display: block;
+      margin: 0.6em 0;
+      background: #000;
     }
     .markdown-body code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

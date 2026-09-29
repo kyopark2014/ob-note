@@ -1121,12 +1121,19 @@ html[data-theme="light"] .tree-item.selected {
   color: var(--text-muted);
 }
 
-.preview-pane img {
+.preview-pane img,
+.preview-pane video.note-video {
   max-width: 100%;
   height: auto;
   border-radius: 6px;
   margin: 0.6em 0;
   display: block;
+}
+
+.preview-pane video.note-video {
+  width: 100%;
+  max-height: 70vh;
+  background: #000;
 }
 
 .content:has(.image-preview-pane) {
@@ -1150,6 +1157,20 @@ html[data-theme="light"] .tree-item.selected {
 
 .image-preview-pane:active {
   cursor: grabbing;
+}
+
+.video-preview-pane,
+.video-preview-pane:active {
+  cursor: default;
+}
+
+.video-preview-player {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  background: #000;
+  border-radius: 4px;
 }
 
 .image-preview-img {

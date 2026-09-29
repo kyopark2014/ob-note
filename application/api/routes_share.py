@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import mimetypes
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
@@ -375,10 +374,9 @@ def share_raw_asset(
         try:
             target = vault_backend.resolve_vault_path(rel)
             if target.is_file():
-                media, _ = mimetypes.guess_type(str(target))
                 return FileResponse(
                     target,
-                    media_type=media or "application/octet-stream",
+                    media_type=viewer_html.media_type_for_name(target.name),
                     headers=headers,
                 )
         except ValueError:
@@ -386,9 +384,8 @@ def share_raw_asset(
         data = vault_share.read_vault_bytes(rel)
         if data is None:
             raise HTTPException(status_code=404, detail="Asset not found")
-    media, _ = mimetypes.guess_type(rel)
     return Response(
         content=data,
-        media_type=media or "application/octet-stream",
+        media_type=viewer_html.media_type_for_name(rel),
         headers=headers,
     )
