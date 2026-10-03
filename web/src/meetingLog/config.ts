@@ -10,7 +10,7 @@ export type MeetingLogConfig = {
 
 const DEFAULT_API =
   (import.meta.env.VITE_MEETING_LOG_API as string | undefined)?.replace(/\/$/, "") ||
-  "https://waeyt5xnx1.execute-api.us-west-2.amazonaws.com";
+  "https://j2ezucz8ph.execute-api.us-west-2.amazonaws.com";
 
 export const MEETING_LOG_CONFIG: MeetingLogConfig = {
   projectName: "meeting-log",
