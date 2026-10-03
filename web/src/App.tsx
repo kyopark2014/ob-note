@@ -563,6 +563,9 @@ export default function App() {
     let cur = path;
     const seen = new Set<string>();
     while (renamedFromRef.current.has(cur) && !seen.has(cur)) {
+      // The open note occupies this path. Reused names (a new Untitled.md after
+      // a retitle) must not follow the old alias or the save overwrites that note.
+      if (cur === activePathRef.current) break;
       seen.add(cur);
       cur = renamedFromRef.current.get(cur)!;
     }
@@ -792,6 +795,7 @@ export default function App() {
 
   const refreshTree = useCallback(async () => {
     const t = await api.getTree();
+    treeRef.current = t.children;
     setTree(t.children);
   }, []);
 
@@ -1121,6 +1125,7 @@ export default function App() {
       setDraft(payload.content);
       setDirty(false);
       setActivePath(resolvedPath);
+      activePathRef.current = resolvedPath;
       setTreeFocus("file");
       writeLastNotePath(resolvedPath);
       syncDeepLinkNotePath(resolvedPath);
@@ -1602,13 +1607,17 @@ export default function App() {
 
   const createNoteIn = useCallback(
     async (parent: string) => {
-      const path = uniqueNotePath(parent, tree);
+      await renameChainRef.current;
+      const path = uniqueNotePath(parent, treeRef.current);
+      // Drop a leftover alias (Untitled.md → previously saved note) so the new
+      // file keeps this path instead of saving over that note.
+      renamedFromRef.current.delete(path);
       await api.writeFile(path, noteTemplate("Untitled"));
       await refreshTree();
       await openFile(path);
       setViewMode("edit");
     },
-    [openFile, refreshTree, tree],
+    [openFile, refreshTree],
   );
 
   const createNote = useCallback(async () => {
