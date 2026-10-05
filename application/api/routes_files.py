@@ -155,6 +155,8 @@ class MkdirBody(BaseModel):
 class RenameBody(BaseModel):
     from_path: str = Field(..., min_length=1, max_length=1024)
     to_path: str = Field(..., min_length=1, max_length=1024)
+    # Drag-and-drop of a note moves the markdown but copies sibling images.
+    copy_companions: bool = False
 
 
 class CopyBody(BaseModel):
@@ -794,9 +796,12 @@ def rename(request: Request, body: RenameBody) -> dict:
         and notes_db.is_markdown_path(body.to_path)
         and vault_companion_assets.parents_differ(body.from_path, body.to_path)
     ):
-        if vault_companion_assets.schedule_move_companion_images(
-            body.from_path, body.to_path
-        ):
+        schedule = (
+            vault_companion_assets.schedule_copy_companion_images
+            if body.copy_companions
+            else vault_companion_assets.schedule_move_companion_images
+        )
+        if schedule(body.from_path, body.to_path):
             companion_images = "queued"
     return {
         "ok": True,

@@ -255,7 +255,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
-  rename: (from_path: string, to_path: string) =>
+  rename: (from_path: string, to_path: string, opts?: { copyCompanions?: boolean }) =>
     request<{
       ok: boolean;
       from: string;
@@ -263,7 +263,11 @@ export const api = {
       companion_images?: "queued" | null;
     }>("/files/rename", {
       method: "POST",
-      body: JSON.stringify({ from_path, to_path }),
+      body: JSON.stringify({
+        from_path,
+        to_path,
+        copy_companions: Boolean(opts?.copyCompanions),
+      }),
     }),
   copyFile: (from_path: string, to_path: string) =>
     request<{

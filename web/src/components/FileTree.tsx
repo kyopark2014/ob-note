@@ -213,12 +213,9 @@ export function getActiveVaultDrag(): DragPayload | null {
   return activeVaultDrag;
 }
 
-/** Markdown notes copy into another folder. Same-folder reorder stays a move. */
-export function vaultDropEffect(targetFolder: string): "copy" | "move" {
-  const drag = activeVaultDrag;
-  if (!drag || drag.kind !== "file" || !isMarkdownNotePath(drag.path)) return "move";
-  if (parentDir(drag.path) === targetFolder) return "move";
-  return "copy";
+/** Vault drag always moves the item. Same-folder reorder is also a move. */
+export function vaultDropEffect(): "move" {
+  return "move";
 }
 
 export function hasExternalFileDrag(e: DragEvent): boolean {
@@ -427,7 +424,7 @@ function FileTreeBranch(props: Props) {
               if (isInternalMoveDrag(e) || hasExternalFiles(e) || e.dataTransfer.types.includes("text/plain")) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect =
-                  hasExternalFiles(e) && !isInternalMoveDrag(e) ? "copy" : vaultDropEffect("");
+                  hasExternalFiles(e) && !isInternalMoveDrag(e) ? "copy" : vaultDropEffect();
               }
               if (!onChildItem) setHighlight({ mode: "folder", path: "" });
             }
@@ -563,12 +560,10 @@ function TreeRow({
     const sameFolder =
       !!dragPath && parentDir(dragPath) === folderPath && dragPath !== node.path;
     const place = insertPlaceFromEvent(e, e.currentTarget, isFolder);
-    const intoFolder = isFolder && (place === "into" || !sameFolder);
-    const targetFolder = intoFolder ? node.path : folderPath;
     e.dataTransfer.dropEffect =
       hasExternalFiles(e) && !isInternalMoveDrag(e)
         ? "copy"
-        : vaultDropEffect(targetFolder);
+        : vaultDropEffect();
 
     if (sameFolder && onReorder && (place === "before" || place === "after")) {
       setHighlight({ mode: "insert", path: node.path, place });
@@ -727,7 +722,7 @@ function TreeRow({
                     e.dataTransfer.dropEffect =
                       hasExternalFiles(e) && !isInternalMoveDrag(e)
                         ? "copy"
-                        : vaultDropEffect(node.path);
+                        : vaultDropEffect();
                     setHighlight({ mode: "folder", path: node.path });
                   }
                 : undefined

@@ -26,7 +26,7 @@ import {
 import { TabContextMenu, type TabContextMenuState, type TabMenuAction } from "./components/TabContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
 import { VideoPreview } from "./components/VideoPreview";
-import { MarkdownPreview } from "./components/MarkdownPreview";
+import { MarkdownEditor } from "./components/markdownEditor/MarkdownEditor";
 import {
   AppearanceIcon,
   ArchiveIcon,
@@ -77,6 +77,7 @@ import {
   ensureAncestorsOpen,
   removeOpenFolders,
   rewriteOpenFolders,
+  setFolderOpen,
 } from "./treeSettings";
 import {
   getShowImages,
@@ -411,6 +412,40 @@ function isVideoUpload(file: File): boolean {
   );
 }
 
+function isMarkdownFileName(name: string): boolean {
+  return /\.(md|markdown)$/i.test(name);
+}
+
+/** Finder/Explorer copy → paste exposes the file on clipboardData. */
+function markdownFilesFromClipboard(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const out: File[] = [];
+  const seen = new Set<string>();
+  const push = (file: File | null) => {
+    if (!file || !isMarkdownFileName(file.name)) return;
+    const key = `${file.name}\0${file.size}\0${file.lastModified}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(file);
+  };
+  for (const file of Array.from(data.files || [])) push(file);
+  for (const item of Array.from(data.items || [])) {
+    if (item.kind === "file") push(item.getAsFile());
+  }
+  return out;
+}
+
+function clipboardHasFiles(data: DataTransfer | null): boolean {
+  if (!data) return false;
+  if (data.files?.length) return true;
+  return Array.from(data.items || []).some((item) => item.kind === "file");
+}
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return !!target.closest("input, textarea, select, [contenteditable='true']");
+}
+
 /** Character offset under the pointer, using the textarea's current text. */
 function textareaDropIndex(ta: HTMLTextAreaElement, clientX: number, clientY: number): number {
   const text = ta.value;
@@ -680,6 +715,17 @@ export default function App() {
   const documentsBtnRef = useRef<HTMLButtonElement>(null);
   const settingsFlyoutRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const editorComposingRef = useRef(false);
+  const resizeEditor = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el || editorComposingRef.current) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.max(el.scrollHeight, 320)}px`;
+  }, []);
+  const bindEditor = useCallback((el: HTMLTextAreaElement | null) => {
+    editorRef.current = el;
+    resizeEditor(el);
+  }, [resizeEditor]);
+  const sidebarBodyRef = useRef<HTMLDivElement | null>(null);
   /** Serializes H1↔filename renames so save never races a half-finished rename. */
   const renameChainRef = useRef(Promise.resolve());
   /** Old path → latest path after H1 auto-rename (follows chains). */
@@ -1713,6 +1759,46 @@ export default function App() {
     [openFile, showAlert],
   );
 
+  const uploadNoteVideos = useCallback(
+    async (videos: File[]): Promise<string> => {
+      if (!activePath || !/\.md$/i.test(activePath) || !videos.length) return "";
+      const parent = noteParentDir(activePath);
+      const taken = new Set(flattenAllPaths(treeRef.current));
+      const chunks: string[] = [];
+      for (const file of videos) {
+        const vaultPath = allocateUploadPath(parent, file.name, taken);
+        const fileName = vaultPath.split("/").pop() || file.name;
+        await api.uploadFile(vaultPath, file, fileName);
+        chunks.push(`![[${fileName}]]`);
+      }
+      if (!showImages) {
+        persistShowImages(true);
+        setShowImages(true);
+      }
+      await refreshTree();
+      return chunks.join("\n\n");
+    },
+    [activePath, refreshTree, showImages],
+  );
+
+  const uploadPastedImage = useCallback(
+    async (file: File): Promise<string> => {
+      if (!activePath || !/\.md$/i.test(activePath)) return "";
+      const parent = noteParentDir(activePath);
+      const ext = extFromImageMime(file.type || "image/png");
+      const vaultPath = uniqueImagePath(parent, ext, treeRef.current);
+      const fileName = vaultPath.split("/").pop() || `image.${ext}`;
+      await api.uploadFile(vaultPath, file, fileName);
+      if (!showImages) {
+        persistShowImages(true);
+        setShowImages(true);
+      }
+      await refreshTree();
+      return `![image](${fileName})`;
+    },
+    [activePath, refreshTree, showImages],
+  );
+
   const onEditorPaste = useCallback(
     async (e: ClipboardEvent<HTMLTextAreaElement>) => {
       if (!activePath || pastingImage) return;
@@ -1727,30 +1813,26 @@ export default function App() {
       const ta = e.currentTarget;
       const start = ta.selectionStart;
       const end = ta.selectionEnd;
-      const parent = noteParentDir(activePath);
-      const ext = extFromImageMime(blob.type || "image/png");
-      const vaultPath = uniqueImagePath(parent, ext, treeRef.current);
-      const fileName = vaultPath.split("/").pop() || `image.${ext}`;
-      const md = `![image](${fileName})`;
 
       setPastingImage(true);
       try {
-        await api.uploadFile(vaultPath, blob, fileName);
+        const md = await uploadPastedImage(blob);
         const el = editorRef.current;
-        if (el) insertEditorText(el, start, end, md);
-        await refreshTree();
+        if (el && md) insertEditorText(el, start, end, md);
       } catch (err) {
         void showAlert(err instanceof Error ? err.message : String(err), "Image paste failed");
       } finally {
         setPastingImage(false);
       }
     },
-    [activePath, pastingImage, refreshTree, showAlert],
+    [activePath, pastingImage, showAlert, uploadPastedImage],
   );
 
   const selectTreeFolder = useCallback((path: string) => {
     setSelectedFolder(path);
     setTreeFocus("folder");
+    // Leave the note editor so the next paste targets the file tree, not the note.
+    sidebarBodyRef.current?.focus();
   }, []);
 
   const draftParentPath = useMemo(() => {
@@ -1957,48 +2039,15 @@ export default function App() {
         ? fromPath.slice(0, fromPath.lastIndexOf("/"))
         : "";
       if (fromParent === toParentPath) return;
-      if (isMarkdownNotePath(fromPath)) {
-        let companionQueued = false;
-        try {
-          const result = await api.copyFile(fromPath, to);
-          companionQueued = result.companion_images === "queued";
-        } catch (err) {
-          void showAlert(err instanceof Error ? err.message : String(err), "Copy failed");
-          return;
-        }
-        try {
-          if (toParentPath) setSelectedFolder(toParentPath);
-          if (activePath === to && /\.md$/i.test(to)) {
-            try {
-              const payload = await api.readFile(to);
-              setFile(payload);
-              setDraft(payload.content);
-              setDirty(false);
-            } catch {
-              /* ignore */
-            }
-          }
-          await refreshTree();
-          if (companionQueued) {
-            window.setTimeout(() => {
-              void refreshTree();
-            }, 1200);
-            window.setTimeout(() => {
-              void refreshTree();
-            }, 4000);
-          }
-        } catch (err) {
-          void showAlert(err instanceof Error ? err.message : String(err), "Copy failed");
-        }
-        return;
-      }
       if (toParentPath === fromPath || toParentPath.startsWith(fromPath + "/")) {
         void showAlert("폴더를 자기 자신이나 하위로 옮길 수 없습니다.", "Move failed");
         return;
       }
       let companionQueued = false;
       try {
-        const result = await api.rename(fromPath, to);
+        const result = await api.rename(fromPath, to, {
+          copyCompanions: isMarkdownNotePath(fromPath),
+        });
         companionQueued = result.companion_images === "queued";
       } catch (err) {
         // Duplicate drop handlers can race; if source is already gone, treat as done.
@@ -2168,21 +2217,62 @@ export default function App() {
     [refreshTree, showAlert, showImages],
   );
 
+  const pasteMarkdownIntoFolder = useCallback(
+    async (parentPath: string, files: File[]) => {
+      try {
+        const taken = new Set(flattenAllPaths(treeRef.current));
+        for (const file of files) {
+          const text = await file.text();
+          const vaultPath = allocateUploadPath(parentPath, file.name, taken);
+          await api.writeFile(vaultPath, text);
+          ensureAncestorsOpen(vaultPath);
+        }
+        if (parentPath) setFolderOpen(parentPath, true);
+        await refreshTree();
+      } catch (err) {
+        void showAlert(err instanceof Error ? err.message : String(err), "Paste failed");
+      }
+    },
+    [refreshTree, showAlert],
+  );
+
+  useEffect(() => {
+    if (panel !== "files" && panel !== "hidden") return;
+    const onPaste = (e: Event) => {
+      if (!(e instanceof ClipboardEvent)) return;
+      if (document.querySelector(".modal-backdrop")) return;
+      const inNoteEditor = e.target === editorRef.current;
+      if (isTextEntryTarget(e.target) && !inNoteEditor) return;
+      if (!clipboardHasFiles(e.clipboardData)) return;
+      const folder =
+        treeFocus === "folder" && selectedFolder
+          ? selectedFolder
+          : activePath && isMarkdownFileName(activePath)
+            ? noteParentDir(activePath)
+            : null;
+      if (folder == null) return;
+      const files = markdownFilesFromClipboard(e.clipboardData);
+      if (!files.length) {
+        if (inNoteEditor) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void showAlert("Markdown 파일만 붙여넣을 수 있습니다.", "Paste");
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      void pasteMarkdownIntoFolder(folder, files);
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [activePath, panel, pasteMarkdownIntoFolder, selectedFolder, showAlert, treeFocus]);
+
   const insertVideosIntoNote = useCallback(
     async (videos: File[], insertAt: number | null) => {
-      if (!activePath || !/\.md$/i.test(activePath) || !videos.length) return;
-      const parent = noteParentDir(activePath);
-      const taken = new Set(flattenAllPaths(treeRef.current));
-      const chunks: string[] = [];
+      if (!videos.length) return;
       try {
-        for (const file of videos) {
-          const vaultPath = allocateUploadPath(parent, file.name, taken);
-          const fileName = vaultPath.split("/").pop() || file.name;
-          await api.uploadFile(vaultPath, file, fileName);
-          chunks.push(`![[${fileName}]]`);
-        }
-        if (!chunks.length) return;
-        const md = chunks.join("\n\n");
+        const md = await uploadNoteVideos(videos);
+        if (!md) return;
         const el = editorRef.current;
         if (el && viewMode === "edit") {
           const at = insertAt == null ? el.value.length : insertAt;
@@ -2204,11 +2294,6 @@ export default function App() {
           setDraft(next);
         }
         setDirty(true);
-        if (!showImages) {
-          persistShowImages(true);
-          setShowImages(true);
-        }
-        await refreshTree();
         if (insertAt != null && editorRef.current) {
           editorRef.current.style.height = "auto";
           editorRef.current.style.height = `${Math.max(editorRef.current.scrollHeight, 320)}px`;
@@ -2217,12 +2302,12 @@ export default function App() {
         void showAlert(err instanceof Error ? err.message : String(err), "Video upload failed");
       }
     },
-    [activePath, refreshTree, showAlert, showImages, viewMode],
+    [showAlert, uploadNoteVideos, viewMode],
   );
 
   const onNoteVideoDrop = useCallback(
     (e: DragEvent<HTMLDivElement>) => {
-      if (!hasExternalFileDrag(e)) return;
+      if (!hasExternalFileDrag(e) || e.defaultPrevented) return;
       e.preventDefault();
       e.stopPropagation();
       const videos = Array.from(e.dataTransfer.files || []).filter(isVideoUpload);
@@ -3414,6 +3499,8 @@ export default function App() {
             </div>
             <div
               className="sidebar-body"
+              ref={sidebarBodyRef}
+              tabIndex={-1}
               onContextMenu={(e) => {
                 const el = e.target as HTMLElement;
                 if (el.closest?.(".tree-item") || el.closest?.(".ctx-menu")) return;
@@ -3425,7 +3512,7 @@ export default function App() {
                 if (el.closest?.(".tree-item")) return;
                 if (isVaultMoveDrag(e) || hasExternalFileDrag(e)) {
                   e.preventDefault();
-                  e.dataTransfer.dropEffect = isVaultMoveDrag(e) ? vaultDropEffect("") : "copy";
+                  e.dataTransfer.dropEffect = isVaultMoveDrag(e) ? vaultDropEffect() : "copy";
                 }
               }}
               onDrop={(e) => {
@@ -3714,33 +3801,61 @@ export default function App() {
                       <textarea
                         key={activePath}
                         defaultValue={draft}
+                        onCompositionStart={() => {
+                          editorComposingRef.current = true;
+                        }}
+                        onCompositionEnd={(e) => {
+                          editorComposingRef.current = false;
+                          resizeEditor(e.currentTarget);
+                        }}
                         onChange={(e) => {
                           const el = e.target;
                           setDraft(el.value);
                           setDirty(el.value !== file.content);
-                          el.style.height = "auto";
-                          el.style.height = `${Math.max(el.scrollHeight, 320)}px`;
+                          requestAnimationFrame(() => resizeEditor(el));
                         }}
                         onPaste={(e) => void onEditorPaste(e)}
-                        onFocus={(e) => {
-                          const el = e.target;
-                          el.style.height = "auto";
-                          el.style.height = `${Math.max(el.scrollHeight, 320)}px`;
-                        }}
-                        ref={(el) => {
-                          editorRef.current = el;
-                          if (!el) return;
-                          el.style.height = "auto";
-                          el.style.height = `${Math.max(el.scrollHeight, 320)}px`;
-                        }}
+                        onFocus={(e) => resizeEditor(e.target)}
+                        ref={bindEditor}
                         spellCheck={false}
                       />
                     </div>
                   ) : (
-                    <MarkdownPreview
+                    <MarkdownEditor
+                      key={activePath}
                       content={draft}
                       notePath={activePath}
+                      onChange={(markdown) => {
+                        setDraft(markdown);
+                        setDirty(markdown !== file.content);
+                      }}
                       onWikiClick={(t) => void onWikiClick(t)}
+                      onUploadImage={async (image) => {
+                        if (pastingImage) return "";
+                        setPastingImage(true);
+                        try {
+                          return await uploadPastedImage(image);
+                        } catch (err) {
+                          void showAlert(
+                            err instanceof Error ? err.message : String(err),
+                            "Image paste failed",
+                          );
+                          return "";
+                        } finally {
+                          setPastingImage(false);
+                        }
+                      }}
+                      onUploadVideos={async (videos) => {
+                        try {
+                          return await uploadNoteVideos(videos);
+                        } catch (err) {
+                          void showAlert(
+                            err instanceof Error ? err.message : String(err),
+                            "Video upload failed",
+                          );
+                          return "";
+                        }
+                      }}
                     />
                   )}
                 </div>

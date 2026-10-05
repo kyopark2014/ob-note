@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ComponentProps, type PointerEvent as ReactPointerEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type AgentChatHandlers, type AgentToolEvent } from "../api";
@@ -13,7 +13,9 @@ import { ToolCallCard } from "./ToolCallCard";
 
 // 6F~12F, 2~2.5처럼 범위에 쓰는 단일 ~ 는 그대로 둔다.
 // 취소선은 ~~텍스트~~ 만 적용한다.
-const gfmRemarkPlugins = [[remarkGfm, { singleTilde: false }]];
+const gfmRemarkPlugins: NonNullable<ComponentProps<typeof ReactMarkdown>["remarkPlugins"]> = [
+  [remarkGfm, { singleTilde: false }],
+];
 
 export type AgentMessage = {
   id: string;

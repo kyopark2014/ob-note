@@ -658,6 +658,7 @@ body.is-resizing-sidebar iframe {
   overflow-y: auto;
   padding: 6px 0;
   -webkit-overflow-scrolling: touch;
+  outline: none;
 }
 
 .sidebar-body .file-tree {
@@ -1023,6 +1024,88 @@ html[data-theme="light"] .tree-item.selected {
 .preview-pane {
   line-height: 1.7;
   font-size: 15px;
+}
+
+.preview-pane .ProseMirror {
+  outline: none;
+  min-height: 48vh;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.preview-pane .ProseMirror p {
+  margin: 0.7em 0;
+}
+
+.preview-pane .ProseMirror ul,
+.preview-pane .ProseMirror ol {
+  margin: 0.6em 0;
+  padding-left: 1.4em;
+}
+
+.preview-pane .ProseMirror ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.2em;
+}
+
+.preview-pane .ProseMirror ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45em;
+}
+
+.preview-pane .ProseMirror ul[data-type="taskList"] li > label {
+  margin-top: 0.28em;
+}
+
+.preview-pane .ProseMirror ul[data-type="taskList"] li > div {
+  flex: 1;
+}
+
+.preview-pane .ProseMirror hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.4em 0;
+}
+
+.preview-pane .ProseMirror-selectednode {
+  outline: 1px solid var(--accent);
+  border-radius: 2px;
+}
+
+.preview-pane .mermaid-source-collapsed {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.preview-pane .vault-code-block {
+  position: relative;
+}
+
+.preview-pane .mermaid-source-toggle {
+  margin-top: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.preview-pane .raw-html-comment {
+  display: inline;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.preview-pane .wiki-embed {
+  display: block;
 }
 
 .preview-pane h1,
