@@ -14,7 +14,8 @@ from typing import Optional
 logger = logging.getLogger("app_data_backend")
 
 _DEFAULT_MOUNT = "/mnt/app-data"
-S3_FILES_PREFIX = "app-data/"
+# Empty: /mnt/app-data maps to s3://{bucket}/.
+S3_FILES_PREFIX = ""
 
 
 def _env_flag(name: str) -> bool:
@@ -79,9 +80,9 @@ def backend_mode() -> str:
 def durable_user_notes_db_path(user_segment: str) -> Path:
     """Persistent notes.db on the S3 Files mount.
 
-    Layout (matches agentic-work app-data style):
+    Layout (bucket-root S3 Files mount):
       /mnt/app-data/{user}/notes.db
-      → s3://{bucket}/app-data/{user}/notes.db
+      → s3://{bucket}/{user}/notes.db
     """
     segment = (user_segment or "").strip()
     if not segment or "/" in segment or "\\" in segment or ".." in segment:

@@ -1,6 +1,6 @@
 """Persist per-user notes.db via S3 Files mount (/mnt/app-data).
 
-Working copy stays under ``data/vault/{user}/.vault/notes.db`` (local disk).
+Working copy stays under ``data/{user}/vault/.vault/notes.db`` (local disk).
 On ECS, durable copy lives at ``/mnt/app-data/{user}/notes.db``.
 
 Same working + persist pattern as agentic-work ``task_store_persistence`` —

@@ -1,8 +1,8 @@
 """Amazon S3 Files app-data storage for ECS only (agentic-work pattern).
 
-Provisions a dedicated S3 Files filesystem scoped to ``app-data/`` and mounts
-it on the ECS task at ``/mnt/app-data``. Vault markdown stays on the S3 API
-(``vault/``); SQLite (notes.db) is persisted via this mount.
+Provisions a dedicated S3 Files filesystem scoped to the bucket root (``/``)
+and mounts it on the ECS task at ``/mnt/app-data``. Vault markdown stays on
+the S3 API (``vault/``); SQLite (notes.db) is persisted via this mount.
 
 No AgentCore Runtime / ``/mnt/workspace`` session storage is created here.
 """
@@ -18,7 +18,9 @@ import boto3
 from botocore.exceptions import ClientError
 
 APP_DATA_MOUNT_PATH = "/mnt/app-data"
-S3_FILES_APP_DATA_PREFIX = "app-data/"
+# Empty prefix scopes /mnt/app-data to s3://{bucket}/.
+S3_FILES_APP_DATA_PREFIX = ""
+LEGACY_S3_FILES_APP_DATA_PREFIX = "app-data/"
 
 logger = logging.getLogger("ob-note-s3files")
 
@@ -49,7 +51,7 @@ class S3FilesAppDataProvisioner:
 
     @staticmethod
     def _normalize_prefix(prefix: str) -> str:
-        if not prefix:
+        if not prefix or prefix == "/":
             return ""
         return prefix if prefix.endswith("/") else f"{prefix}/"
 
@@ -314,10 +316,7 @@ class S3FilesAppDataProvisioner:
                 detail
                 and detail.get("status") == "available"
                 and detail.get("bucket") == s3_bucket_arn
-                and (
-                    not detail.get("prefix")
-                    or detail.get("prefix") == want_prefix
-                )
+                and detail.get("prefix") == want_prefix
             ):
                 logger.info(
                     "  Reusing preferred S3 Files file system: %s (prefix=%s)",
@@ -346,13 +345,16 @@ class S3FilesAppDataProvisioner:
         bucket = s3_bucket_arn.removeprefix("arn:aws:s3:::")
         self._ensure_bucket_versioning(bucket)
         normalized = self._normalize_prefix(prefix)
-        resp = self.s3files.create_file_system(
-            bucket=s3_bucket_arn,
-            prefix=normalized,
-            roleArn=role_arn,
-            acceptBucketWarning=True,
-            tags=[{"key": "Name", "value": name_tag}],
-        )
+        create_kwargs: dict[str, Any] = {
+            "bucket": s3_bucket_arn,
+            "roleArn": role_arn,
+            "acceptBucketWarning": True,
+            "tags": [{"key": "Name", "value": name_tag}],
+        }
+        # Omit prefix so the file system scopes the entire bucket.
+        if normalized:
+            create_kwargs["prefix"] = normalized
+        resp = self.s3files.create_file_system(**create_kwargs)
         fs_id = resp["fileSystemId"]
         logger.info("  Created S3 Files file system: %s (prefix=%s)", fs_id, normalized)
         self._wait_status(self.s3files.get_file_system, "fileSystemId", fs_id)
@@ -756,17 +758,26 @@ class S3FilesAppDataProvisioner:
         preferred_file_system_id: str = "",
         cleanup_duplicates: bool = True,
     ) -> dict[str, Any]:
-        """Provision or reuse app-data/ S3 Files FS + mount targets for ECS."""
-        logger.info("Ensuring S3 Files app-data storage (ECS → %s)", APP_DATA_MOUNT_PATH)
+        """Provision or reuse bucket-root S3 Files FS + mount targets for ECS."""
+        logger.info(
+            "Ensuring S3 Files app-data storage (ECS → %s, prefix=%s)",
+            APP_DATA_MOUNT_PATH,
+            S3_FILES_APP_DATA_PREFIX or "/",
+        )
         if not subnet_ids:
             raise RuntimeError("At least one subnet is required for S3 Files mount targets")
 
         s3_bucket_arn = f"arn:aws:s3:::{s3_bucket_name}"
         name_tag = f"s3files-app-data-for-{self.project_name}"
-        try:
-            self.s3.put_object(Bucket=s3_bucket_name, Key=S3_FILES_APP_DATA_PREFIX, Body=b"")
-        except ClientError as e:
-            logger.warning("  app-data/ prefix marker: %s", e)
+        if S3_FILES_APP_DATA_PREFIX:
+            try:
+                self.s3.put_object(
+                    Bucket=s3_bucket_name, Key=S3_FILES_APP_DATA_PREFIX, Body=b""
+                )
+            except ClientError as e:
+                logger.warning("  app-data prefix marker: %s", e)
+        else:
+            self._relocate_legacy_prefix(s3_bucket_name, LEGACY_S3_FILES_APP_DATA_PREFIX)
 
         sync_role_arn = self._get_or_create_sync_role(s3_bucket_arn)
         file_system = self._get_or_create_file_system(
@@ -801,7 +812,7 @@ class S3FilesAppDataProvisioner:
             or f"arn:aws:s3files:{self.region}:{self.account_id}:file-system/{file_system_id}",
             "access_point_arn": access_point_arn,
             "mount_path": APP_DATA_MOUNT_PATH,
-            "prefix": S3_FILES_APP_DATA_PREFIX,
+            "prefix": S3_FILES_APP_DATA_PREFIX or "/",
             "mount_sg_id": mount_sg_id,
             "subnets": list(subnet_ids),
         }
@@ -817,8 +828,50 @@ class S3FilesAppDataProvisioner:
         logger.info("  File system: %s", file_system_id)
         logger.info("  Access point: %s", access_point_arn)
         logger.info("  Mount path: %s", APP_DATA_MOUNT_PATH)
-        logger.info("  Prefix: %s", S3_FILES_APP_DATA_PREFIX)
+        logger.info("  Prefix: %s", S3_FILES_APP_DATA_PREFIX or "/")
         return info
+
+    def _relocate_legacy_prefix(self, bucket: str, src_prefix: str) -> int:
+        """Copy ``{src_prefix}{path}`` to ``{path}`` when the destination is missing.
+
+        Source keys stay in place. Existing bucket-root objects are not overwritten,
+        so ``vault/`` is left as-is when ``app-data/vault/`` also exists.
+        """
+        if not src_prefix:
+            return 0
+        copied = 0
+        try:
+            paginator = self.s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=src_prefix):
+                for obj in page.get("Contents") or []:
+                    src_key = obj.get("Key") or ""
+                    if not src_key.startswith(src_prefix) or src_key.endswith("/"):
+                        continue
+                    dst_key = src_key[len(src_prefix) :]
+                    if not dst_key or dst_key == "vault" or dst_key.startswith("vault/"):
+                        continue
+                    try:
+                        self.s3.head_object(Bucket=bucket, Key=dst_key)
+                        continue
+                    except ClientError as e:
+                        code = e.response.get("Error", {}).get("Code", "")
+                        if code not in {"404", "NoSuchKey", "NotFound"}:
+                            logger.warning("  head %s: %s", dst_key, e)
+                            continue
+                    self.s3.copy_object(
+                        Bucket=bucket,
+                        Key=dst_key,
+                        CopySource={"Bucket": bucket, "Key": src_key},
+                    )
+                    copied += 1
+        except ClientError as e:
+            logger.warning("  legacy prefix relocate skipped: %s", e)
+            return copied
+        if copied:
+            logger.info(
+                "  Copied %s object(s) from %s to bucket root", copied, src_prefix
+            )
+        return copied
 
 
 def apply_app_data_config(
@@ -834,6 +887,7 @@ def apply_app_data_config(
     cfg["s3_files_app_data_mount_path"] = app_data_info.get(
         "mount_path", APP_DATA_MOUNT_PATH
     )
+    cfg["s3_files_app_data_prefix"] = app_data_info.get("prefix") or "/"
     return cfg
 
 

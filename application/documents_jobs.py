@@ -1,4 +1,4 @@
-"""Background Documents sync jobs (per-user under data/documents/{user}/).
+"""Background Documents sync jobs (per-user under data/{user}/documents/).
 
 Runs ``documents/sync_documents.py`` in a detached subprocess so closing the Sync modal
 does not cancel the job. Status is persisted to disk.

@@ -17,6 +17,7 @@ interface Props {
   busy: boolean;
   message: string | null;
   progress?: SyncProgressInfo | null;
+  hint?: string | null;
   onClose: () => void;
 }
 
@@ -25,6 +26,7 @@ export function SyncProgressModal({
   busy,
   message,
   progress,
+  hint = null,
   onClose,
 }: Props) {
   useEffect(() => {
@@ -58,17 +60,19 @@ export function SyncProgressModal({
       ? `파일 ${progress.file_i}/${progress.file_n}`
       : null;
   const phaseLabel =
-    progress?.phase === "flush"
+    progress?.phase === "flush" || progress?.phase === "upload"
       ? "업로드"
       : progress?.phase === "pull"
         ? "내려받기"
-        : null;
+        : progress?.phase === "scan"
+          ? "준비"
+          : progress?.phase === "zip"
+            ? "압축"
+            : null;
 
-  const metaParts = [
-    phaseLabel,
-    fileLabel,
-    pct !== null ? `${pct}%` : null,
-  ].filter((part): part is string => Boolean(part));
+  const metaParts = [phaseLabel, fileLabel, pct !== null ? `${pct}%` : null].filter(
+    (part): part is string => Boolean(part),
+  );
 
   const display =
     message?.trim() ||
@@ -119,26 +123,23 @@ export function SyncProgressModal({
             <div className="sync-progress-meta">{metaParts.join(" · ")}</div>
           )}
 
-          {busy && metaParts.length > 0 && (
+          {busy && pct !== null && (
             <div
               className="sync-progress-bar"
               role="progressbar"
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={pct ?? 0}
+              aria-valuenow={pct}
             >
-              <div
-                className="sync-progress-bar-fill"
-                style={{ width: `${pct ?? 0}%` }}
-              />
+              <div className="sync-progress-bar-fill" style={{ width: `${pct}%` }} />
             </div>
           )}
 
           <p className="sync-progress-message">{display}</p>
           {busy && (
             <p className="sync-progress-hint">
-              완료될 때까지 이 창을 유지하거나, Settings의 Syncing 표시로
-              진행 상태를 확인할 수 있습니다.
+              {hint ||
+                "완료될 때까지 이 창을 유지하거나, Settings의 Syncing 표시로 진행 상태를 확인할 수 있습니다."}
             </p>
           )}
         </div>

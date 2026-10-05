@@ -1,4 +1,4 @@
-"""Documents API — Configure / Sync for per-user ``data/documents/{user}/``.
+"""Documents API — Configure / Sync for per-user ``data/{user}/documents/``.
 
 Projects + Drawings only. 「복사」 → vault ``OCR/Projects|Drawings``.
 """

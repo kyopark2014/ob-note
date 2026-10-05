@@ -18,6 +18,7 @@ from application.api.routes_auth import require_user_id
 from application import (
     notes_db,
     vault_backend,
+    vault_compress,
     vault_companion_assets,
     vault_index,
     vault_order,
@@ -159,6 +160,15 @@ class DeleteBody(BaseModel):
 
 class DuplicateBody(BaseModel):
     path: str = Field(..., min_length=1, max_length=1024)
+
+
+class CompressBody(BaseModel):
+    path: str = Field("", max_length=1024)
+    scope: str = Field("folder", max_length=16)
+
+
+class CompressItemBody(BaseModel):
+    id: str = Field(..., min_length=8, max_length=64)
 
 
 class ReorderBody(BaseModel):
@@ -879,6 +889,66 @@ def duplicate_path(request: Request, body: DuplicateBody) -> dict:
         vault_sync.enqueue_put_tree(rel)
         vault_sync.schedule_flush_pending()
     return {"ok": True, "from": body.path, "to": rel}
+
+
+@router.post("/compress")
+def compress_folder(request: Request, body: CompressBody) -> dict:
+    """Start a background zip of a vault folder and return job status."""
+    user_id = require_user_id(request)
+    scope = (body.scope or "folder").strip().lower()
+    try:
+        if scope == "vault":
+            return vault_compress.start_compress(user_id, entire_vault=True)
+        if scope != "folder":
+            raise HTTPException(status_code=400, detail="Invalid compress scope")
+        return vault_compress.start_compress(user_id, body.path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=413, detail=str(e)) from e
+
+
+@router.get("/compress/items")
+def compress_items(request: Request) -> dict:
+    """List compress jobs recorded in backup/{user}/compress.json."""
+    user_id = require_user_id(request)
+    return vault_compress.list_items(user_id)
+
+
+@router.post("/compress/delete")
+def compress_delete(request: Request, body: CompressItemBody) -> dict:
+    user_id = require_user_id(request)
+    try:
+        return vault_compress.delete_item(user_id, body.id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.post("/compress/refresh")
+def compress_refresh(request: Request, body: CompressItemBody) -> dict:
+    """Issue a new one-hour download URL for an existing archive."""
+    user_id = require_user_id(request)
+    try:
+        return vault_compress.refresh_download(user_id, body.id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.get("/compress")
+def compress_status(request: Request) -> dict:
+    """Poll background compress progress (file, count, percent, download URL)."""
+    user_id = require_user_id(request)
+    return vault_compress.get_status(user_id)
 
 
 @router.get("/sync")

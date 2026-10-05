@@ -7,7 +7,7 @@ Per-user project & drawing document staging for ob-note (vault OCR copy).
 **Staging** (PDF/registry — parallel to vault, not inside it):
 
 ```
-data/documents/{sanitize(user)}/
+data/{sanitize(user)}/documents/
   projects/              uploaded sources + extracted {stem}.md / {stem}.json
   project_list.json
   drawings/

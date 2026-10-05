@@ -322,6 +322,19 @@ def empty_s3_prefix(s3, bucket: str, prefix: str) -> int:
     return deleted
 
 
+def empty_per_user_vaults(s3, bucket: str) -> int:
+    """Delete ``{user}/vault/`` objects. Skips the legacy ``vault/`` prefix."""
+    deleted = 0
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Delimiter="/"):
+        for common in page.get("CommonPrefixes") or []:
+            top = common.get("Prefix") or ""
+            if not top or top == "vault/":
+                continue
+            deleted += empty_s3_prefix(s3, bucket, f"{top}vault/")
+    return deleted
+
+
 def delete_s3_bucket_fully(s3, bucket: str) -> None:
     logger.info("  Emptying and deleting bucket %s …", bucket)
     try:
@@ -533,7 +546,8 @@ def delete_stack(
         if purge_vault_prefix:
             try:
                 n = empty_s3_prefix(s3, target, "vault/")
-                logger.info("  ✓ Purged %d objects under vault/ (bucket kept)", n)
+                n += empty_per_user_vaults(s3, target)
+                logger.info("  ✓ Purged %d vault object versions (bucket kept)", n)
             except ClientError as e:
                 logger.warning("  vault/ purge: %s", e)
         else:
@@ -595,7 +609,7 @@ def main() -> int:
     parser.add_argument(
         "--purge-vault-prefix",
         action="store_true",
-        help="With --keep-s3, also delete s3://{bucket}/vault/ objects",
+        help="With --keep-s3, also delete vault/_public/ and {user}/vault/ objects",
     )
     args = parser.parse_args()
 
@@ -622,7 +636,7 @@ def main() -> int:
             "" if args.keep_s3 else ", S3 bucket",
         )
         if args.keep_s3 and args.purge_vault_prefix:
-            logger.info("Also purge s3://%s/vault/", bucket)
+            logger.info("Also purge s3://%s/vault/ and s3://%s/{user}/vault/", bucket, bucket)
         response = input("\nAre you sure you want to continue? (yes/no): ")
         if response.lower() != "yes":
             logger.info("Uninstallation cancelled.")

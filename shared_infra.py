@@ -87,7 +87,6 @@ def bootstrap_config(config_path: Path) -> dict[str, Any]:
     cfg.pop("agentic_work_url", None)
     cfg["region"] = region
     cfg["accountId"] = account
-    cfg.setdefault("s3_files_vault_prefix", "vault/")
     cfg.setdefault("s3_files_vault_mount_path", "/mnt/vault")
     cfg.setdefault("s3_files_app_data_mount_path", "/mnt/app-data")
     cfg.setdefault("custom_domain", DEFAULT_CUSTOM_DOMAIN)
@@ -171,11 +170,6 @@ def ensure_s3_bucket(s3, bucket: str, region: str) -> str:
         s3.put_object(Bucket=bucket, Key="vault/", Body=b"")
     except ClientError as e:
         logger.warning("vault/ prefix: %s", e)
-
-    try:
-        s3.put_object(Bucket=bucket, Key="app-data/", Body=b"")
-    except ClientError as e:
-        logger.warning("app-data/ prefix: %s", e)
 
     return bucket
 

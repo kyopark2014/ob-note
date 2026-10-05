@@ -832,7 +832,6 @@ def register_task_definition(
         "region": region,
         "s3_bucket": cfg["s3_bucket"],
         "s3_arn": cfg.get("s3_arn", f"arn:aws:s3:::{cfg['s3_bucket']}"),
-        "s3_files_vault_prefix": "vault/",
         "s3_files_vault_mount_path": "/mnt/vault",
         "auth_mode": (cfg.get("auth_mode") or "").strip().lower()
         or ("google" if cfg.get("google_client_id") else "cognito"),
@@ -864,7 +863,7 @@ def register_task_definition(
     environment = [
         {"name": "APP_CONFIG_JSON", "value": json.dumps(app_config)},
         {"name": "VAULT_S3_ENABLE", "value": "1"},
-        {"name": "VAULT_DIR", "value": "/app/data/vault"},
+        {"name": "VAULT_DIR", "value": "/app/data"},
         {"name": "PROJECT_NAME", "value": PROJECT},
     ]
     container: dict[str, Any] = {
@@ -939,9 +938,11 @@ def register_task_definition(
                 {"name": "TASK_DB_PROJECT", "value": PROJECT},
             ]
         )
+        mount_prefix = str(info.get("prefix") or cfg.get("s3_files_app_data_prefix") or "/")
         logger.info(
-            "  ECS will mount app-data S3 Files at %s (prefix=app-data/)",
+            "  ECS will mount app-data S3 Files at %s (prefix=%s)",
             app_data_mount,
+            mount_prefix,
         )
 
     task_kwargs: dict[str, Any] = {

@@ -47,6 +47,44 @@ export type NotesSourcesConfig = {
   max_sources: number;
 };
 
+export type CompressJobStatus = {
+  ok: boolean;
+  job_id?: string | null;
+  status: "idle" | "queued" | "running" | "ready" | "error" | string;
+  message?: string | null;
+  error?: string | null;
+  path?: string | null;
+  zip_name?: string | null;
+  backup_path?: string | null;
+  s3_key?: string | null;
+  url?: string | null;
+  expires_in?: number | null;
+  progress?: {
+    file?: string | null;
+    file_i?: number | null;
+    file_n?: number | null;
+    pct?: number | null;
+    phase?: string | null;
+  } | null;
+};
+
+export type CompressListItem = {
+  id: string;
+  scope: "vault" | "folder" | string;
+  path?: string | null;
+  zip_name?: string | null;
+  backup_path?: string | null;
+  s3_key?: string | null;
+  status: "Processing" | "Completed" | "Expired" | "Failed" | string;
+  created_at?: number | null;
+  expires_at?: number | null;
+  url?: string | null;
+  message?: string | null;
+  error?: string | null;
+  size?: number | null;
+  progress?: CompressJobStatus["progress"];
+};
+
 const BASE = "/api";
 
 async function readResponseBody(res: Response): Promise<unknown> {
@@ -180,6 +218,30 @@ export const api = {
     request<{ ok: boolean; from: string; to: string }>("/files/duplicate", {
       method: "POST",
       body: JSON.stringify({ path }),
+    }),
+  compressFolder: (path: string) =>
+    request<CompressJobStatus>("/files/compress", {
+      method: "POST",
+      body: JSON.stringify({ path, scope: "folder" }),
+    }),
+  compressVault: () =>
+    request<CompressJobStatus>("/files/compress", {
+      method: "POST",
+      body: JSON.stringify({ scope: "vault" }),
+    }),
+  getCompressStatus: (signal?: AbortSignal) =>
+    request<CompressJobStatus>("/files/compress", { signal }),
+  listCompressItems: () =>
+    request<{ ok: boolean; items: CompressListItem[] }>("/files/compress/items"),
+  deleteCompressItem: (id: string) =>
+    request<{ ok: boolean; id: string }>("/files/compress/delete", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+  refreshCompressItem: (id: string) =>
+    request<{ ok: boolean; item: CompressListItem }>("/files/compress/refresh", {
+      method: "POST",
+      body: JSON.stringify({ id }),
     }),
   createShare: (path: string) =>
     request<{

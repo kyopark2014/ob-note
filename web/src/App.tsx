@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { api } from "./api";
+import { api, type CompressJobStatus } from "./api";
 import { FileTree, acceptDrop, hasExternalFileDrag, isVaultMoveDrag } from "./components/FileTree";
 import {
   AlertDialog,
@@ -9,6 +9,7 @@ import {
 import { ConfigDrawer } from "./components/ConfigDrawer";
 import { SyncProgressModal, type SyncProgressInfo } from "./components/SyncProgressModal";
 import { SharedListModal } from "./components/SharedListModal";
+import { CompressListModal } from "./components/CompressListModal";
 import { GoogleLoginModal } from "./components/GoogleLoginModal";
 import { NotesConfigureModal } from "./components/NotesConfigureModal";
 import { NotesGraphModal } from "./components/NotesGraphModal";
@@ -27,6 +28,7 @@ import { VideoPreview } from "./components/VideoPreview";
 import { MarkdownPreview } from "./components/MarkdownPreview";
 import {
   AppearanceIcon,
+  ArchiveIcon,
   AgentIcon,
   BookIcon,
   DocumentsIcon,
@@ -464,8 +466,14 @@ export default function App() {
   const [alertState, setAlertState] = useState<{
     title?: string;
     message: string;
+    link?: { href: string; label: string } | null;
     resolve: () => void;
   } | null>(null);
+  const [compressPopupOpen, setCompressPopupOpen] = useState(false);
+  const [compressListOpen, setCompressListOpen] = useState(false);
+  const [compressBusy, setCompressBusy] = useState(false);
+  const [compressMsg, setCompressMsg] = useState<string | null>(null);
+  const [compressProgress, setCompressProgress] = useState<SyncProgressInfo | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
@@ -550,6 +558,8 @@ export default function App() {
   const activePathRef = useRef(activePath);
   const treeRef = useRef(tree);
   const didRestoreNote = useRef(false);
+  const loginSyncUserRef = useRef<string | null>(null);
+  const compressFinishRef = useRef<string | null>(null);
   draftRef.current = draft;
   activePathRef.current = activePath;
   treeRef.current = tree;
@@ -740,6 +750,7 @@ export default function App() {
     } catch {
       /* GSI may not be loaded */
     }
+    loginSyncUserRef.current = null;
     setUserId(null);
     setTree([]);
     setTabs([]);
@@ -875,6 +886,18 @@ export default function App() {
     }
   }, [refreshSyncStatus, syncing]);
 
+  // Settings → Sync, once per signed-in user (fresh login and existing session).
+  useEffect(() => {
+    if (!userId) {
+      loginSyncUserRef.current = null;
+      return;
+    }
+    if (!ready || authError) return;
+    if (loginSyncUserRef.current === userId) return;
+    loginSyncUserRef.current = userId;
+    void runVaultSync();
+  }, [ready, userId, authError, runVaultSync]);
+
   useEffect(() => {
     if (!syncing && !syncPopupOpen) return;
     let cancelled = false;
@@ -997,11 +1020,18 @@ export default function App() {
     });
   }, []);
 
-  const showAlert = useCallback((message: string, title = "Notice") => {
-    return new Promise<void>((resolve) => {
-      setAlertState({ title, message, resolve });
-    });
-  }, []);
+  const showAlert = useCallback(
+    (
+      message: string,
+      title = "Notice",
+      link?: { href: string; label: string },
+    ) => {
+      return new Promise<void>((resolve) => {
+        setAlertState({ title, message, link, resolve });
+      });
+    },
+    [],
+  );
 
   const persistNote = useCallback(
     async (path: string, content: string): Promise<{ finalPath: string; content: string }> => {
@@ -2127,6 +2157,64 @@ export default function App() {
     ],
   );
 
+  const finishCompressJob = useCallback(
+    (next: CompressJobStatus) => {
+      if (next.status !== "ready" && next.status !== "error") return;
+      const key = next.job_id || `${next.status}:${next.path}:${next.url || next.error || ""}`;
+      if (compressFinishRef.current === key) return;
+      compressFinishRef.current = key;
+      setCompressBusy(false);
+      setCompressPopupOpen(false);
+      if (next.status === "ready" && next.url) {
+        const hours = Math.max(1, Math.round((next.expires_in || 3600) / 3600));
+        const zipName = next.zip_name || "archive.zip";
+        const subject = next.path
+          ? `${next.path.split("/").pop()} 폴더`
+          : "vault 전체";
+        void showAlert(
+          `${subject}를 ${zipName}으로 압축했습니다.\n다운로드 링크는 약 ${hours}시간 동안 유효합니다.`,
+          "Compress",
+          { href: next.url, label: "다운로드" },
+        );
+        return;
+      }
+      void showAlert(next.error || next.message || "압축에 실패했습니다.", "Compress failed");
+    },
+    [showAlert],
+  );
+
+  const startCompress = useCallback(
+    async (target: { path?: string; scope: "folder" | "vault" }) => {
+      setSettingsOpen(false);
+      setAppearanceOpen(false);
+      setViewOpen(false);
+      setSharePermissionOpen(false);
+      setDocumentsMenuOpen(false);
+      setCompressPopupOpen(true);
+      setCompressBusy(true);
+      setCompressProgress({ phase: "scan" });
+      setCompressMsg(
+        target.scope === "vault" ? "vault 전체 압축을 준비하는 중…" : "압축을 준비하는 중…",
+      );
+      try {
+        const res =
+          target.scope === "vault"
+            ? await api.compressVault()
+            : await api.compressFolder(target.path || "");
+        setCompressMsg(res.message || "압축을 진행하고 있습니다…");
+        if (res.progress) setCompressProgress(res.progress);
+        const busy = res.status === "queued" || res.status === "running";
+        setCompressBusy(busy);
+        if (!busy) finishCompressJob(res);
+      } catch (err) {
+        setCompressBusy(false);
+        setCompressPopupOpen(false);
+        void showAlert(err instanceof Error ? err.message : String(err), "Compress failed");
+      }
+    },
+    [finishCompressJob, showAlert],
+  );
+
   const onFolderMenuAction = useCallback(
     async (action: FolderMenuAction, path: string) => {
       setSelectedFolder(path);
@@ -2151,6 +2239,10 @@ export default function App() {
         } catch (err) {
           void showAlert(err instanceof Error ? err.message : String(err));
         }
+        return;
+      }
+      if (action === "compress") {
+        await startCompress({ path, scope: "folder" });
         return;
       }
       if (action === "share") {
@@ -2215,10 +2307,53 @@ export default function App() {
       removeTreePath,
       selectedFolder,
       showAlert,
+      startCompress,
       startCreateFolder,
       updatePinnedPaths,
     ],
   );
+
+  useEffect(() => {
+    if (!compressBusy) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let abort: AbortController | null = null;
+
+    async function pollCompress() {
+      abort = new AbortController();
+      const timeout = setTimeout(() => abort?.abort(), 10000);
+      try {
+        const next = await api.getCompressStatus(abort.signal);
+        if (cancelled) return;
+        if (next.status === "idle") {
+          timer = setTimeout(pollCompress, 400);
+          return;
+        }
+        if (next.progress) setCompressProgress(next.progress);
+        const busy = next.status === "queued" || next.status === "running";
+        if (busy) {
+          setCompressBusy(true);
+          setCompressMsg(next.message || "압축을 진행하고 있습니다…");
+          timer = setTimeout(pollCompress, 800);
+          return;
+        }
+        if (next.message) setCompressMsg(next.message);
+        finishCompressJob(next);
+      } catch {
+        if (cancelled) return;
+        if (compressBusy) timer = setTimeout(pollCompress, 2000);
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    void pollCompress();
+    return () => {
+      cancelled = true;
+      abort?.abort();
+      if (timer) clearTimeout(timer);
+    };
+  }, [compressBusy, finishCompressJob]);
 
   const onPanelMenuAction = useCallback(
     async (action: PanelMenuAction, parentPath: string) => {
@@ -2535,6 +2670,22 @@ export default function App() {
             </span>
           </button>
           <button
+            type="button"
+            className={`rail-settings-btn${compressListOpen || compressPopupOpen ? " is-active" : ""}`}
+            title="압축 목록을 엽니다. 시작하기는 vault 전체를 압축합니다."
+            onClick={() => {
+              setAppearanceOpen(false);
+              setViewOpen(false);
+              setSharePermissionOpen(false);
+              setDocumentsMenuOpen(false);
+              setSettingsOpen(false);
+              setCompressListOpen(true);
+            }}
+          >
+            <ArchiveIcon />
+            <span>Compress</span>
+          </button>
+          <button
             ref={documentsBtnRef}
             type="button"
             className={`rail-settings-btn${documentsMenuOpen || documentsSyncBusy || documentsConfigureOpen || documentsListOpen ? " is-active" : ""}`}
@@ -2660,7 +2811,25 @@ export default function App() {
           onClose={() => setDocumentsSyncPopupOpen(false)}
         />
       )}
+      {compressPopupOpen && (
+        <SyncProgressModal
+          title="Compress"
+          busy={compressBusy}
+          message={compressMsg}
+          progress={compressProgress}
+          hint="완료되면 다운로드 링크가 열립니다. 이 창을 닫아도 압축은 계속됩니다."
+          onClose={() => setCompressPopupOpen(false)}
+        />
+      )}
       <SharedListModal open={sharedListOpen} onClose={() => setSharedListOpen(false)} />
+      <CompressListModal
+        open={compressListOpen}
+        onClose={() => setCompressListOpen(false)}
+        onStart={() => {
+          setCompressListOpen(false);
+          void startCompress({ scope: "vault" });
+        }}
+      />
       {notesGraphOpen && (
         <NotesGraphModal
           onClose={() => setNotesGraphOpen(false)}
@@ -3182,6 +3351,7 @@ export default function App() {
         open={!!alertState}
         title={alertState?.title}
         message={alertState?.message ?? ""}
+        link={alertState?.link}
         onClose={() => {
           alertState?.resolve();
           setAlertState(null);

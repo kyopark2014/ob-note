@@ -9,9 +9,9 @@ Obsidian형 **Local-first Plain Text** vault 웹 앱입니다.
 |---|---|
 | 접속 경로 | `https://vault.my-agentic-ai.click` |
 | React 앱 | [`web/`](web/) (`base: /`) |
-| Vault (markdown) | S3 API `vault/{userId}/` ↔ working `data/vault/{userId}/` |
-| App-data (DB) | S3 Files `app-data/` → ECS `/mnt/app-data` |
-| 로컬 working copy | `data/vault/{userId}/` |
+| Vault (markdown) | S3 API `{userId}/vault/` ↔ working `data/{userId}/vault/` |
+| App-data (DB) | S3 Files `/` → ECS `/mnt/app-data` |
+| 로컬 working copy | `data/{userId}/vault/` |
 | 설정 폴더 | `{user}/.vault/` (`.obsidian` 대체) |
 | 공개 공유 인덱스 | `vault/_public/shares_index.json` |
 
@@ -21,23 +21,23 @@ Obsidian형 **Local-first Plain Text** vault 웹 앱입니다.
 CloudFront-for-ob-note
   └─ ALB (alb-for-ob-note)
        └─ /*       → ECS service-for-ob-note
-            ├─ working: /app/data/vault/{userId}/  ← S3 API sync vault/
-            └─ /mnt/app-data/{userId}/notes.db     ← S3 Files app-data/ (ECS only)
+            ├─ working: /app/data/{userId}/vault/  ← S3 API sync {userId}/vault/
+            └─ /mnt/app-data/{userId}/notes.db     ← S3 Files bucket root (ECS only)
 ```
 
 - **계정 분리**: Google `userId`(email)를 path segment로 sanitize해 노트·설정·그래프·sync 큐를 계정별로 격리 (agentic-work와 동일 패턴)
-- **Vault s3 모드 (ECS 기본)**: `VAULT_S3_ENABLE=1` — 로컬 working ↔ `s3://{bucket}/vault/{userId}/` sync
+- **Vault s3 모드 (ECS 기본)**: `VAULT_S3_ENABLE=1` — 로컬 working ↔ `s3://{bucket}/{userId}/vault/` sync
   - 저장/삭제 시 pending 큐(`{user}/.vault/pending_s3_ops.json`, S3에도 미러)에 쌓은 뒤 flush
   - Settings **Sync**: pending 업로드를 먼저 끝낸 다음, 해당 계정 S3 prefix에서 **변경분만** 내려받음
   - 부팅 시에는 전역 pull 없이, 로그인 후 계정별 sync
 - **App-data (ECS only)**: agentic-work와 같이 S3 Files를 `/mnt/app-data`에 마운트
   - `notes.db`(노트 레지스트리 + agent chat)는 NFS 위에서 직접 열지 않고 **working → persist** 복사
-  - working: `data/vault/{user}/.vault/notes.db`
-  - durable: `/mnt/app-data/{user}/notes.db` → `s3://{bucket}/app-data/{user}/notes.db`
+  - working: `data/{user}/vault/.vault/notes.db`
+  - durable: `/mnt/app-data/{user}/notes.db` → `s3://{bucket}/{user}/notes.db`
   - 로그인 시 S3 Files에서 notes.db를 **강제 복원** (toons-viewer `load_user_db_from_s3_files`와 동일)
   - durable 없으면 working을 mount에 즉시 seed
   - 이후 API는 idempotent restore만 수행; 변경 후 20초 debounce persist, shutdown flush
-- **local 모드**: `data/vault/{userId}/`만 사용 (app-data mount 없음)
+- **local 모드**: `data/{userId}/vault/`만 사용 (app-data mount 없음)
 
 ## 빠른 시작 (로컬)
 
@@ -67,22 +67,19 @@ cd web && npm install && npm run dev
 ## Vault 구조
 
 ```text
-data/vault/                      # working copy (계정별 하위 폴더)
-# ECS: notes.db durable → /mnt/app-data/{user}/notes.db
-├── _public/
-│   └── shares_index.json        # token → user_id (공개 /s/{token})
-├── alice@example.com/
+data/
+├── vault/_public/shares_index.json   # token → user_id (공개 /s/{token})
+├── alice@example.com/vault/          # working copy
 │   ├── 00-Inbox/
 │   ├── notes/
 │   ├── attachments/
 │   └── .vault/
 │       ├── app.json
-│       ├── shares.json          # 이 계정의 공유 목록
+│       ├── shares.json
 │       ├── graph.json
 │       ├── pending_s3_ops.json
 │       └── cache/
-└── bob@example.com/
-    └── …
+└── bob@example.com/vault/
 ```
 
 `userId`(email)는 path-safe segment로 sanitize됩니다. `_public` 등은 예약 이름입니다.
@@ -263,7 +260,7 @@ SSE 이벤트 예: `session`, `token`, `text`, `tool`, `tool_result`, `note_upda
 Other app (AgentCore / LangGraph)
   → skills/my-vaults/scripts/read_vault.py | write_vault.py
        → https://vault.my-agentic-ai.click/api/…  (VaultAgent HMAC)
-            → vault/{USER_ID}/…
+            → {USER_ID}/vault/…
 ```
 
 #### 구성
@@ -338,7 +335,7 @@ Other app (SigV4)
   → AgentCore Runtime MCP  URL  (use_vault_mcp_url)
        → MCP tools (vault_read / vault_write / … + actor_id)
             → https://vault…/api/files|search|graph  (VaultAgent HMAC)
-                 → vault/{actor_id}/…
+                 → {actor_id}/vault/…
 ```
 
 #### 도구
@@ -490,8 +487,8 @@ GET /s/{token}/w/{vault/path.md}  # Share permission 범위 안의 위키 대상
 
 ## ECS / ALB
 
-1. **S3**: 프로젝트 버킷 — `vault/{userId}/` (markdown API sync) + `app-data/` (S3 Files)
-2. **S3 Files (ECS only)**: `app-data/` → 컨테이너 `/mnt/app-data` (notes.db persist)
+1. **S3**: 프로젝트 버킷 — `{userId}/vault/` (markdown API sync). notes.db·backup은 버킷 루트
+2. **S3 Files (ECS only)**: 버킷 `/` → 컨테이너 `/mnt/app-data` (notes.db persist)
 3. **ECS 서비스**: 이 이미지, 포트 `8502`, health `/api/health`
 4. **ALB listener rule**: path `/*` (+ CloudFront origin header) → ob-note target group
 5. **CloudFront**: ALB origin (`CloudFront-for-ob-note`) + alias `vault.my-agentic-ai.click`  
@@ -503,7 +500,7 @@ GET /s/{token}/w/{vault/path.md}  # Share permission 범위 안의 위키 대상
 APP_CONFIG_JSON='{...config.json...}'
 SESSION_SIGNING_KEY=...
 VAULT_S3_ENABLE=1
-VAULT_DIR=/app/data/vault
+VAULT_DIR=/app/data
 APP_DATA_MOUNT=/mnt/app-data
 TASK_DB_MOUNT=/mnt/app-data
 ```
@@ -514,7 +511,7 @@ TASK_DB_MOUNT=/mnt/app-data
 docker build -t ob-note .
 docker run --rm -p 8502:8502 \
   -e ALLOW_LOCAL_AUTH_BYPASS=1 \
-  -v "$PWD/data/vault:/app/data/vault" \
+  -v "$PWD/data:/app/data" \
   ob-note
 ```
 
@@ -654,7 +651,7 @@ python add_user.py --config config.json --username user01
 3. ECR `ecr-for-ob-note` 빌드/푸시
 4. ALB rule `/*` → `TG-for-ob-note` (CloudFront origin header 조건)
 5. ECS `service-for-ob-note` on `cluster-for-ob-note`
-   - 계정 vault는 로그인 시 `vault/{userId}/`에 생성 (installer가 샘플 노트를 seed하지 않음)
+   - 계정 vault는 로그인 시 `{userId}/vault/`에 생성 (installer가 샘플 노트를 seed하지 않음)
 
 ### 제거 (uninstaller)
 

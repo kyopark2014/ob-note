@@ -1,7 +1,7 @@
 """Documents staging helpers for ob-note.
 
 Storage layout (parallel to vault, keeps OCR vault folder clean):
-  data/documents/{sanitize(user)}/
+  data/{sanitize(user)}/documents/
     projects/   drawings/   out/   project_list.json   drawings_list.json
     settings.json   (mirror of FMP flags for sync_documents subprocess)
     artifacts/md/   (local markdown publish cache)
@@ -9,7 +9,7 @@ Storage layout (parallel to vault, keeps OCR vault folder clean):
 User-facing FMP settings also live at:
   {vault_root}/.vault/documents_settings.json
 
-S3 staging uploads use prefix ``session-uploads/{user}/documents/...`` via
+S3 staging uploads use prefix ``{user}/documents/...`` via
 ``vault_backend.s3_bucket_and_region()``.
 """
 
@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import traceback
 from contextlib import contextmanager
@@ -34,9 +35,9 @@ from application import utils as app_utils
 logger = logging.getLogger("documents_support")
 
 _ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_DOCUMENTS_BASE = _ROOT / "data" / "documents"
+_DEFAULT_DATA = _ROOT / "data"
+DOCUMENTS_DIR_NAME = "documents"
 
-DOCUMENTS_S3_PREFIX = "session-uploads"
 S3_FILES_SESSION_PREFIX = "agentcore-sessions"
 MAX_DOCUMENTS_DOC_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 
@@ -55,11 +56,46 @@ def sanitize_user_path_segment(user_id: str | None) -> str | None:
 
 
 def documents_storage_base() -> Path:
-    """Root for all users' document staging dirs."""
+    """Data root (``data/``). Per-user files live in ``{root}/{user}/documents``.
+
+    ``DOCUMENTS_STORAGE_DIR`` is that root. A value ending in ``documents`` is
+    the previous layout (``data/documents``) and is treated as the parent.
+    """
     env = (os.environ.get("DOCUMENTS_STORAGE_DIR") or "").strip()
-    base = Path(env) if env else _DEFAULT_DOCUMENTS_BASE
+    if not env:
+        base = _DEFAULT_DATA
+    else:
+        path = Path(env)
+        base = path.parent if path.name == DOCUMENTS_DIR_NAME else path
     base.mkdir(parents=True, exist_ok=True)
     return base.resolve()
+
+
+def _relocate_legacy_documents(segment: str, dest: Path) -> None:
+    """Move ``data/documents/{user}/`` to ``data/{user}/documents/``."""
+    legacy = documents_storage_base() / DOCUMENTS_DIR_NAME / segment
+    try:
+        if not legacy.is_dir() or legacy.resolve() == dest.resolve():
+            return
+    except OSError:
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for child in list(legacy.iterdir()):
+        target = dest / child.name
+        if target.exists():
+            continue
+        try:
+            shutil.move(str(child), str(target))
+            moved += 1
+        except OSError:
+            logger.exception("Failed to relocate documents path %s", child)
+    if moved:
+        logger.info("Relocated %d documents entries from %s to %s", moved, legacy, dest)
+    try:
+        legacy.rmdir()
+    except OSError:
+        pass
 
 
 def _s3_bucket_region() -> tuple[str | None, str]:
@@ -204,11 +240,11 @@ def ensure_user_artifacts_dir(user_id: str | None) -> str:
 
 
 def get_user_documents_dir(user_id: str | None) -> str:
-    """Per-user Documents root: ``data/documents/{user_id}/``."""
+    """Per-user Documents root: ``data/{user_id}/documents/``."""
     segment = sanitize_user_path_segment(user_id)
     if not segment:
         segment = "default"
-    return str(documents_storage_base() / segment)
+    return str(documents_storage_base() / segment / DOCUMENTS_DIR_NAME)
 
 
 def _ensure_documents_on_path() -> str:
@@ -227,7 +263,8 @@ def ensure_user_documents_dir(user_id: str | None) -> str:
             "Invalid user_id for documents path; expected a plain user id, "
             "not a signed session cookie"
         )
-    docs_dir = str(documents_storage_base() / segment)
+    docs_dir = get_user_documents_dir(user_id)
+    _relocate_legacy_documents(segment, Path(docs_dir))
     for name in (
         "",
         "projects",
@@ -566,10 +603,10 @@ def _session_upload_content_type(file_name: str) -> str:
 
 
 def documents_projects_s3_key(file_name: str, user_id: str | None = None) -> str:
-    """Build ``session-uploads/{user}/documents/projects/{file}`` staging key."""
+    """Build ``{user}/documents/projects/{file}`` staging key."""
     segment = sanitize_user_path_segment(user_id) or "default"
     safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    return f"{DOCUMENTS_S3_PREFIX}/{segment}/documents/projects/{safe_name}"
+    return f"{segment}/documents/projects/{safe_name}"
 
 
 def generate_documents_projects_presigned_put(
@@ -718,7 +755,7 @@ def materialize_documents_projects_from_s3(
 def documents_drawings_s3_key(file_name: str, user_id: str | None = None) -> str:
     segment = sanitize_user_path_segment(user_id) or "default"
     safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
-    return f"{DOCUMENTS_S3_PREFIX}/{segment}/documents/drawings/{safe_name}"
+    return f"{segment}/documents/drawings/{safe_name}"
 
 
 def generate_documents_drawings_presigned_put(
@@ -874,7 +911,7 @@ def documents_project_pdf_public_url(
         return None
     segment = sanitize_user_path_segment(user_id) or "default"
     relative = (
-        f"{DOCUMENTS_S3_PREFIX}/{parse.quote(segment)}/documents/projects/"
+        f"{parse.quote(segment)}/documents/projects/"
         f"{parse.quote(safe_name)}"
     )
     return f"{_sharing_url().rstrip('/')}/{relative}"
@@ -890,7 +927,7 @@ def documents_drawing_pdf_public_url(
         return None
     segment = sanitize_user_path_segment(user_id) or "default"
     relative = (
-        f"{DOCUMENTS_S3_PREFIX}/{parse.quote(segment)}/documents/drawings/"
+        f"{parse.quote(segment)}/documents/drawings/"
         f"{parse.quote(safe_name)}"
     )
     return f"{_sharing_url().rstrip('/')}/{relative}"

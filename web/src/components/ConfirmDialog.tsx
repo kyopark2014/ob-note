@@ -103,14 +103,26 @@ export function ConfirmDialog({ open, options, onConfirm, onCancel }: Props) {
   );
 }
 
+type AlertLink = {
+  href: string;
+  label: string;
+};
+
 type AlertProps = {
   open: boolean;
   title?: string;
   message: string;
+  link?: AlertLink | null;
   onClose: () => void;
 };
 
-export function AlertDialog({ open, title = "Notice", message, onClose }: AlertProps) {
+export function AlertDialog({
+  open,
+  title = "Notice",
+  message,
+  link = null,
+  onClose,
+}: AlertProps) {
   const titleId = useId();
 
   useEffect(() => {
@@ -154,7 +166,22 @@ export function AlertDialog({ open, title = "Notice", message, onClose }: AlertP
         <div className="modal-footer">
           <span />
           <div className="modal-actions">
-            <button type="button" className="modal-btn modal-btn-confirm" onClick={onClose} autoFocus>
+            {link ? (
+              <a
+                className="modal-btn modal-btn-confirm"
+                href={link.href}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {link.label}
+              </a>
+            ) : null}
+            <button
+              type="button"
+              className={`modal-btn ${link ? "modal-btn-cancel" : "modal-btn-confirm"}`}
+              onClick={onClose}
+              autoFocus
+            >
               OK
             </button>
           </div>

@@ -7,7 +7,7 @@ Mirrors the document staging path from wiki/ESS sync:
 
 Working tree (per user)::
 
-    data/documents/{user}/
+    data/{user}/documents/
       projects/             project sources + extracted ``{stem}.md`` / ``{stem}.json``
       project_list.json     project document registry
       drawings/             drawing sources + extracted ``{stem}.md`` / ``{stem}.json``
@@ -65,14 +65,6 @@ def _project_root() -> Path:
     return _REPO_ROOT
 
 
-def _documents_storage_base() -> Path:
-    """ob-note: ``data/documents/{user}/`` (parallel to vault)."""
-    env = (os.environ.get("DOCUMENTS_STORAGE_DIR") or "").strip()
-    if env:
-        return Path(env)
-    return _REPO_ROOT / "data" / "documents"
-
-
 def _safe_user(user_id: str) -> str:
     raw = (user_id or "").strip() or "default"
     return (
@@ -84,14 +76,10 @@ def _safe_user(user_id: str) -> str:
 
 def _documents_dirs(user_id: str) -> tuple[Path, Path, Path, Path, Path]:
     from doc_list import DRAWINGS_DIR_NAME, PROJECTS_DIR_NAME
+    from application.documents_support import ensure_user_documents_dir
 
-    # Layout: data/documents/{user}/projects|drawings|out (no nested /documents).
-    root = _documents_storage_base() / _safe_user(user_id)
-    # Compat: if DOCUMENTS_STORAGE_DIR was set to a session root, allow
-    # ``{base}/{user}/documents`` when that folder already exists.
-    nested = root / "documents"
-    if nested.is_dir() and not (root / PROJECTS_DIR_NAME).is_dir():
-        root = nested
+    # Layout: data/{user}/documents/projects|drawings|out
+    root = Path(ensure_user_documents_dir(user_id))
     projects = root / PROJECTS_DIR_NAME
     drawings = root / DRAWINGS_DIR_NAME
     out = root / "out"

@@ -1,12 +1,11 @@
 """Vault storage backend: S3 Files mount, optional S3 API sync, or local disk.
 
-ECS mounts vault/ at /mnt/vault (project S3 bucket).
-Locally: data/vault/ is the working copy. Opt-in S3 sync with VAULT_S3_ENABLE=1.
+Local working copy: ``data/{user}/vault/``. Opt-in S3 sync with VAULT_S3_ENABLE=1.
 
-Per-user isolation (agentic-work style):
-  local/mount: {vault_base}/{sanitize(user_id)}/
-  S3:          vault/{sanitize(user_id)}/…
-  public share index: {vault_base}/_public/  and  vault/_public/
+Per-user isolation:
+  local working copy: data/{sanitize(user_id)}/vault/
+  S3 notes:           {sanitize(user_id)}/vault/…
+  public share index: data/vault/_public/  and  s3 vault/_public/
 """
 
 from __future__ import annotations
@@ -28,9 +27,11 @@ from application import utils
 logger = logging.getLogger("vault_backend")
 
 _ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_LOCAL = _ROOT / "data" / "vault"
+_DEFAULT_DATA = _ROOT / "data"
 _DEFAULT_MOUNT = Path("/mnt/vault")
-S3_PREFIX = "vault/"
+# Notes live at s3://{bucket}/{user}/vault/ — not under a leading vault/ prefix.
+S3_USER_VAULT_DIR = "vault"
+S3_PUBLIC_PREFIX = "vault/_public/"
 PUBLIC_SEGMENT = "_public"
 
 _sync_lock = threading.RLock()
@@ -86,20 +87,39 @@ def mount_dir() -> Path:
     return Path(cfg_path) if cfg_path else _DEFAULT_MOUNT
 
 
-def local_dir() -> Path:
-    """Base local vault directory (contains per-user subfolders)."""
+def data_dir() -> Path:
+    """Root for ``{user}/vault`` and ``vault/_public``.
+
+    ``VAULT_DIR`` is that root (``data``). A value ending in ``vault`` is the
+    previous layout (``data/vault``) and is treated as the parent data root.
+    """
     raw = (os.environ.get("VAULT_DIR") or "").strip()
-    return Path(raw) if raw else _DEFAULT_LOCAL
+    if not raw:
+        return _DEFAULT_DATA
+    path = Path(raw)
+    if path.name == "vault":
+        return path.parent
+    return path
+
+
+def local_dir() -> Path:
+    """Data root. Per-user notes live in ``{data}/{user}/vault``."""
+    return data_dir()
 
 
 def vault_base() -> Path:
-    """Mount or local root that holds ``{user}/`` and ``_public/``."""
-    if mount_available():
-        root = mount_dir()
-    else:
-        root = local_dir()
+    """Data root that holds ``{user}/vault``."""
+    root = data_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root.resolve()
+
+
+def user_vault_dir(user_id: Optional[str] = None) -> Path:
+    """``data/{user}/vault`` (or the mount equivalent)."""
+    segment = user_segment(user_id)
+    if mount_available():
+        return mount_dir() / segment / S3_USER_VAULT_DIR
+    return data_dir() / segment / S3_USER_VAULT_DIR
 
 
 def mount_available() -> bool:
@@ -133,25 +153,19 @@ def s3_bucket_and_region() -> tuple[Optional[str], str]:
     return bucket, region
 
 
-def s3_prefix_base() -> str:
-    """Configured vault/ prefix (no user segment)."""
-    cfg = utils.load_config()
-    prefix = (cfg.get("s3_files_vault_prefix") or S3_PREFIX).strip() or S3_PREFIX
-    return prefix if prefix.endswith("/") else prefix + "/"
-
-
 def s3_prefix(user_id: Optional[str] = None) -> str:
-    """Per-user S3 prefix: ``vault/{user}/``."""
-    return s3_prefix_base() + user_segment(user_id) + "/"
+    """Per-user S3 prefix: ``{user}/vault/``."""
+    return f"{user_segment(user_id)}/{S3_USER_VAULT_DIR}/"
 
 
 def s3_public_prefix() -> str:
-    """Global (non-user) prefix for public share index: ``vault/_public/``."""
-    return s3_prefix_base() + PUBLIC_SEGMENT + "/"
+    """Global share index: ``vault/_public/`` (not inside a user vault)."""
+    prefix = S3_PUBLIC_PREFIX.strip()
+    return prefix if prefix.endswith("/") else prefix + "/"
 
 
 def public_dir() -> Path:
-    path = vault_base() / PUBLIC_SEGMENT
+    path = data_dir() / S3_USER_VAULT_DIR / PUBLIC_SEGMENT
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -176,8 +190,8 @@ def backend_mode() -> str:
 
 
 def vault_root(user_id: Optional[str] = None) -> Path:
-    """Active per-user vault root for file I/O."""
-    root = vault_base() / user_segment(user_id)
+    """Active per-user vault root for file I/O: ``data/{user}/vault``."""
+    root = user_vault_dir(user_id)
     root.mkdir(parents=True, exist_ok=True)
     settings = root / ".vault"
     settings.mkdir(parents=True, exist_ok=True)
@@ -255,7 +269,7 @@ def _sync_key() -> str:
 
 
 def sync_from_s3(*, force: bool = False) -> dict:
-    """Download vault/{user}/ objects into local working copy (s3 mode only).
+    """Download ``{user}/vault/`` objects into the local working copy (s3 mode only).
 
     Delegates to vault_sync: never pulls while pending local→S3 ops remain.
     Prefer incremental unless ``force=True``.
@@ -328,10 +342,15 @@ def ensure_user_vault(user_id: Optional[str] = None) -> Path:
     uid = user_id if user_id is not None else current_user_id()
     with user_scope(uid):
         segment = user_segment()
-        root = vault_base() / segment
+        root = user_vault_dir()
+        if not mount_available():
+            try:
+                _relocate_legacy_local_vault(segment, root)
+            except Exception:
+                logger.exception("Legacy local vault relocate failed")
         # Adopt legacy flat vault before vault_root() creates an empty .vault
         # that would block moving the old settings directory.
-        if segment == "local-dev":
+        if segment == "local-dev" and not mount_available():
             try:
                 _maybe_adopt_legacy_flat_vault(root)
             except Exception:
@@ -339,9 +358,36 @@ def ensure_user_vault(user_id: Optional[str] = None) -> Path:
         return vault_root()
 
 
+def _relocate_legacy_local_vault(segment: str, dest: Path) -> None:
+    """Move ``data/vault/{user}/`` to ``data/{user}/vault/`` when the new dir is empty."""
+    legacy = data_dir() / S3_USER_VAULT_DIR / segment
+    try:
+        if not legacy.is_dir() or legacy.resolve() == dest.resolve():
+            return
+    except OSError:
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for child in list(legacy.iterdir()):
+        target = dest / child.name
+        if target.exists():
+            continue
+        try:
+            shutil.move(str(child), str(target))
+            moved += 1
+        except OSError:
+            logger.exception("Failed to relocate %s", child)
+    if moved:
+        logger.info("Relocated %d entries from %s to %s", moved, legacy, dest)
+    try:
+        legacy.rmdir()
+    except OSError:
+        pass
+
+
 def _maybe_adopt_legacy_flat_vault(root: Path) -> None:
-    """Move pre-multi-tenant notes from vault_base into local-dev (once)."""
-    base = vault_base()
+    """Move pre-multi-tenant notes from data/vault into local-dev (once)."""
+    base = data_dir() / S3_USER_VAULT_DIR
     if root.resolve() == base.resolve():
         return
     marker = base / ".vault_migrated_to_users"

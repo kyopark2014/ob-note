@@ -417,6 +417,10 @@ export function useMeetingLog(userId: string | null) {
     }
 
     const { apiUploadUrl, apiBatchUrl, apiBatchJobUrl } = MEETING_LOG_CONFIG;
+    if (!userId) {
+      setStatus("로그인 후 전체 변환할 수 있습니다.");
+      return;
+    }
     setBatchBusy(true);
     setCanSaveVault(false);
     const seconds = recordedSeconds(pcmChunksRef.current);
@@ -426,7 +430,8 @@ export function useMeetingLog(userId: string | null) {
 
     try {
       const wav = encodeWav(chunks);
-      const signedRes = await fetch(apiUploadUrl, { cache: "no-store" });
+      const uploadUrl = `${apiUploadUrl}${apiUploadUrl.includes("?") ? "&" : "?"}userId=${encodeURIComponent(userId)}`;
+      const signedRes = await fetch(uploadUrl, { cache: "no-store" });
       const signed = (await signedRes.json().catch(() => ({}))) as {
         uploadUrl?: string;
         key?: string;
@@ -449,7 +454,7 @@ export function useMeetingLog(userId: string | null) {
       const startedRes = await fetch(apiBatchUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: signed.key }),
+        body: JSON.stringify({ key: signed.key, userId }),
       });
       const started = (await startedRes.json().catch(() => ({}))) as {
         jobName?: string;
@@ -512,7 +517,7 @@ export function useMeetingLog(userId: string | null) {
     } finally {
       setBatchBusy(false);
     }
-  }, []);
+  }, [userId]);
 
   const releaseWakeLock = useCallback(async () => {
     const lock = wakeLockRef.current;

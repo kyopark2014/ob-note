@@ -817,7 +817,7 @@ def sync_from_s3_incremental(
     force: bool = False,
     on_progress: Optional[Any] = None,
 ) -> dict[str, Any]:
-    """Make local vault match s3://…/vault/ (download + prune).
+    """Make local vault match s3://…/{user}/vault/ (download + prune).
 
     S3 is the source of truth for object contents. Folder-name casing conflicts
     (``agent/`` vs ``Agent/``) are reconciled in ``sync_now`` before pull.

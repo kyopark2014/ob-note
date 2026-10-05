@@ -1706,6 +1706,13 @@ html[data-theme="light"] .tree-item.selected {
   cursor: pointer;
 }
 
+a.modal-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .modal-btn-cancel {
   background: var(--bg-hover);
   color: var(--text);
@@ -1857,6 +1864,44 @@ html[data-theme="light"] .tree-item.selected {
   border-color: var(--danger);
   color: var(--danger);
   background: var(--danger-soft);
+}
+
+.compress-list-modal {
+  width: min(760px, 94vw);
+  max-width: 760px;
+}
+
+.compress-list-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compress-list-header-actions .modal-close {
+  margin: 0;
+}
+
+.compress-status {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.compress-status-processing {
+  color: var(--accent);
+}
+
+.compress-status-completed {
+  color: #3fb950;
+}
+
+.compress-status-expired {
+  color: var(--text-muted);
+}
+
+.compress-status-failed {
+  color: var(--danger);
 }
 
 /* Notes Graph modal (Wiki Graph UX) */
