@@ -64,11 +64,19 @@ export function SyncProgressModal({
       ? "업로드"
       : progress?.phase === "pull"
         ? "내려받기"
-        : progress?.phase === "scan"
+            : progress?.phase === "scan"
           ? "준비"
           : progress?.phase === "zip"
             ? "압축"
-            : null;
+            : progress?.phase === "sync"
+              ? "동기화"
+              : progress?.phase === "walk"
+                ? "파일 목록"
+                : progress?.phase === "read"
+                  ? "노트 검사"
+                  : progress?.phase === "delete"
+                    ? "삭제"
+                    : null;
 
   const metaParts = [phaseLabel, fileLabel, pct !== null ? `${pct}%` : null].filter(
     (part): part is string => Boolean(part),

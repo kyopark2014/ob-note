@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { api, type CompressJobStatus } from "./api";
-import { FileTree, acceptDrop, hasExternalFileDrag, isVaultMoveDrag } from "./components/FileTree";
+import { api, type ClearingScan, type CompressJobStatus } from "./api";
+import { FileTree, acceptDrop, getActiveVaultDrag, hasExternalFileDrag, isMarkdownNotePath, isVaultMoveDrag, parseVaultDrag, vaultDropEffect } from "./components/FileTree";
 import {
   AlertDialog,
   ConfirmDialog,
@@ -10,6 +10,7 @@ import { ConfigDrawer } from "./components/ConfigDrawer";
 import { SyncProgressModal, type SyncProgressInfo } from "./components/SyncProgressModal";
 import { SharedListModal } from "./components/SharedListModal";
 import { CompressListModal } from "./components/CompressListModal";
+import { ClearingListModal } from "./components/ClearingListModal";
 import { GoogleLoginModal } from "./components/GoogleLoginModal";
 import { NotesConfigureModal } from "./components/NotesConfigureModal";
 import { NotesGraphModal } from "./components/NotesGraphModal";
@@ -29,10 +30,12 @@ import { MarkdownPreview } from "./components/MarkdownPreview";
 import {
   AppearanceIcon,
   ArchiveIcon,
+  ClearingIcon,
   AgentIcon,
   BookIcon,
   DocumentsIcon,
   EditIcon,
+  SaveIcon,
   FilesIcon,
   GraphIcon,
   LogoutIcon,
@@ -94,7 +97,7 @@ import {
   getAgentWidth,
   setAgentWidth as persistAgentWidth,
 } from "./agentPanelSettings";
-import { resolveWikiTarget } from "./wikiLink";
+import { resolveWikiTarget, wikiLinkMarkdown } from "./wikiLink";
 import type {
   FilePayload,
   OpenTab,
@@ -408,6 +411,123 @@ function isVideoUpload(file: File): boolean {
   );
 }
 
+/** Character offset under the pointer, using the textarea's current text. */
+function textareaDropIndex(ta: HTMLTextAreaElement, clientX: number, clientY: number): number {
+  const text = ta.value;
+  const fallback = ta.selectionStart ?? text.length;
+  if (!text) return 0;
+  const rect = ta.getBoundingClientRect();
+  if (clientY > rect.bottom) return text.length;
+  if (clientY < rect.top) return 0;
+  const x = Math.min(rect.right - 1, Math.max(rect.left + 1, clientX));
+  const y = Math.min(rect.bottom - 1, Math.max(rect.top + 1, clientY));
+  const style = getComputedStyle(ta);
+  const mirror = document.createElement("div");
+  mirror.textContent = text;
+  mirror.style.position = "fixed";
+  mirror.style.left = `${rect.left}px`;
+  mirror.style.top = `${rect.top}px`;
+  mirror.style.width = `${rect.width}px`;
+  mirror.style.height = `${rect.height}px`;
+  mirror.style.boxSizing = "border-box";
+  mirror.style.overflow = "hidden";
+  mirror.style.margin = "0";
+  mirror.style.opacity = "0";
+  mirror.style.zIndex = "2147483646";
+  mirror.style.whiteSpace = style.whiteSpace || "pre-wrap";
+  mirror.style.overflowWrap = style.overflowWrap;
+  mirror.style.wordBreak = style.wordBreak;
+  mirror.style.font = style.font;
+  mirror.style.letterSpacing = style.letterSpacing;
+  mirror.style.lineHeight = style.lineHeight;
+  mirror.style.tabSize = style.tabSize;
+  mirror.style.padding = style.padding;
+  mirror.style.border = style.border;
+  mirror.style.textAlign = style.textAlign;
+  document.body.appendChild(mirror);
+  if (ta.scrollTop) mirror.scrollTop = ta.scrollTop;
+  if (ta.scrollLeft) mirror.scrollLeft = ta.scrollLeft;
+  try {
+    const node = mirror.firstChild;
+    if (!node || node.nodeType !== Node.TEXT_NODE) return fallback;
+    const textNode = node as Text;
+    const range = document.createRange();
+    const box = (i: number): DOMRect | null => {
+      if (i <= 0) {
+        range.setStart(textNode, 0);
+        range.setEnd(textNode, Math.min(1, text.length));
+      } else if (i >= text.length) {
+        range.setStart(textNode, text.length - 1);
+        range.setEnd(textNode, text.length);
+      } else {
+        range.setStart(textNode, i);
+        range.setEnd(textNode, i + 1);
+      }
+      return range.getClientRects()[0] ?? null;
+    };
+    let lo = 0;
+    let hi = text.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const r = box(mid);
+      if (r && r.bottom <= y) lo = mid + 1;
+      else hi = mid;
+    }
+    let i = Math.min(lo, text.length);
+    const anchor = box(Math.min(i, Math.max(0, text.length - 1)));
+    if (!anchor) return text.length;
+    const lineTop = anchor.top;
+    while (i > 0) {
+      const prev = box(i - 1);
+      if (!prev || prev.top < lineTop - 1) break;
+      i -= 1;
+    }
+    let best = i;
+    let bestDx = Number.POSITIVE_INFINITY;
+    while (i <= text.length) {
+      if (i < text.length) {
+        const r = box(i);
+        if (r && r.top > lineTop + 1) break;
+        const dx = Math.abs((r?.left ?? 0) - x);
+        if (dx < bestDx) {
+          bestDx = dx;
+          best = i;
+        }
+      } else {
+        const prev = box(text.length - 1);
+        const dx = Math.abs((prev?.right ?? 0) - x);
+        if (dx < bestDx) best = text.length;
+        break;
+      }
+      i += 1;
+    }
+    return best;
+  } finally {
+    mirror.remove();
+  }
+}
+
+/** Insert text through the browser so Command-Z can undo it. */
+function insertEditorText(
+  el: HTMLTextAreaElement,
+  start: number,
+  end: number,
+  text: string,
+): void {
+  el.focus();
+  const max = el.value.length;
+  const a = Math.max(0, Math.min(start, max));
+  const b = Math.max(a, Math.min(end, max));
+  const next = `${el.value.slice(0, a)}${text}${el.value.slice(b)}`;
+  el.setSelectionRange(a, b);
+  const inserted = document.execCommand("insertText", false, text);
+  if (inserted && el.value === next) return;
+  el.value = next;
+  const caret = a + text.length;
+  el.setSelectionRange(caret, caret);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function uniqueImagePath(parent: string, ext: string, tree: TreeNode[]): string {
   const existing = new Set(flattenAllPaths(tree));
   let path = "";
@@ -471,6 +591,16 @@ export default function App() {
   } | null>(null);
   const [compressPopupOpen, setCompressPopupOpen] = useState(false);
   const [compressListOpen, setCompressListOpen] = useState(false);
+  const [clearingOpen, setClearingOpen] = useState(false);
+  const [clearingScan, setClearingScan] = useState<ClearingScan | null>(null);
+  const [clearingPopupOpen, setClearingPopupOpen] = useState(false);
+  const [clearingBusy, setClearingBusy] = useState(false);
+  const [clearingDeletePopupOpen, setClearingDeletePopupOpen] = useState(false);
+  const [clearingDeleteBusy, setClearingDeleteBusy] = useState(false);
+  const [clearingDeleteMsg, setClearingDeleteMsg] = useState<string | null>(null);
+  const [clearingDeleteProgress, setClearingDeleteProgress] = useState<SyncProgressInfo | null>(null);
+  const [clearingMsg, setClearingMsg] = useState<string | null>(null);
+  const [clearingProgress, setClearingProgress] = useState<SyncProgressInfo | null>(null);
   const [compressBusy, setCompressBusy] = useState(false);
   const [compressMsg, setCompressMsg] = useState<string | null>(null);
   const [compressProgress, setCompressProgress] = useState<SyncProgressInfo | null>(null);
@@ -560,6 +690,10 @@ export default function App() {
   const didRestoreNote = useRef(false);
   const loginSyncUserRef = useRef<string | null>(null);
   const compressFinishRef = useRef<string | null>(null);
+  const compressSawActiveRef = useRef(false);
+  const compressBusyRef = useRef(false);
+  const compressJobRef = useRef<string | null>(null);
+  const clearingOpenedRef = useRef<string | null>(null);
   draftRef.current = draft;
   activePathRef.current = activePath;
   treeRef.current = tree;
@@ -1602,17 +1736,9 @@ export default function App() {
       setPastingImage(true);
       try {
         await api.uploadFile(vaultPath, blob, fileName);
-        const next = `${draftRef.current.slice(0, start)}${md}${draftRef.current.slice(end)}`;
-        setDraft(next);
-        setDirty(true);
+        const el = editorRef.current;
+        if (el) insertEditorText(el, start, end, md);
         await refreshTree();
-        requestAnimationFrame(() => {
-          const el = editorRef.current;
-          if (!el) return;
-          const caret = start + md.length;
-          el.focus();
-          el.setSelectionRange(caret, caret);
-        });
       } catch (err) {
         void showAlert(err instanceof Error ? err.message : String(err), "Image paste failed");
       } finally {
@@ -1831,6 +1957,41 @@ export default function App() {
         ? fromPath.slice(0, fromPath.lastIndexOf("/"))
         : "";
       if (fromParent === toParentPath) return;
+      if (isMarkdownNotePath(fromPath)) {
+        let companionQueued = false;
+        try {
+          const result = await api.copyFile(fromPath, to);
+          companionQueued = result.companion_images === "queued";
+        } catch (err) {
+          void showAlert(err instanceof Error ? err.message : String(err), "Copy failed");
+          return;
+        }
+        try {
+          if (toParentPath) setSelectedFolder(toParentPath);
+          if (activePath === to && /\.md$/i.test(to)) {
+            try {
+              const payload = await api.readFile(to);
+              setFile(payload);
+              setDraft(payload.content);
+              setDirty(false);
+            } catch {
+              /* ignore */
+            }
+          }
+          await refreshTree();
+          if (companionQueued) {
+            window.setTimeout(() => {
+              void refreshTree();
+            }, 1200);
+            window.setTimeout(() => {
+              void refreshTree();
+            }, 4000);
+          }
+        } catch (err) {
+          void showAlert(err instanceof Error ? err.message : String(err), "Copy failed");
+        }
+        return;
+      }
       if (toParentPath === fromPath || toParentPath.startsWith(fromPath + "/")) {
         void showAlert("폴더를 자기 자신이나 하위로 옮길 수 없습니다.", "Move failed");
         return;
@@ -2022,32 +2183,41 @@ export default function App() {
         }
         if (!chunks.length) return;
         const md = chunks.join("\n\n");
-        const base = draftRef.current;
-        const next =
-          insertAt == null
-            ? `${base}${base && !base.endsWith("\n") ? "\n\n" : base ? "\n" : ""}${md}\n`
-            : `${base.slice(0, insertAt)}${md}${base.slice(insertAt)}`;
-        setDraft(next);
+        const el = editorRef.current;
+        if (el && viewMode === "edit") {
+          const at = insertAt == null ? el.value.length : insertAt;
+          const base = el.value;
+          const prefix =
+            insertAt == null && base && !base.endsWith("\n")
+              ? "\n\n"
+              : insertAt == null && base
+                ? "\n"
+                : "";
+          const suffix = insertAt == null ? "\n" : "";
+          insertEditorText(el, at, at, `${prefix}${md}${suffix}`);
+        } else {
+          const base = draftRef.current;
+          const next =
+            insertAt == null
+              ? `${base}${base && !base.endsWith("\n") ? "\n\n" : base ? "\n" : ""}${md}\n`
+              : `${base.slice(0, insertAt)}${md}${base.slice(insertAt)}`;
+          setDraft(next);
+        }
         setDirty(true);
         if (!showImages) {
           persistShowImages(true);
           setShowImages(true);
         }
         await refreshTree();
-        if (insertAt != null) {
-          requestAnimationFrame(() => {
-            const el = editorRef.current;
-            if (!el) return;
-            const caret = insertAt + md.length;
-            el.focus();
-            el.setSelectionRange(caret, caret);
-          });
+        if (insertAt != null && editorRef.current) {
+          editorRef.current.style.height = "auto";
+          editorRef.current.style.height = `${Math.max(editorRef.current.scrollHeight, 320)}px`;
         }
       } catch (err) {
         void showAlert(err instanceof Error ? err.message : String(err), "Video upload failed");
       }
     },
-    [activePath, refreshTree, showAlert, showImages],
+    [activePath, refreshTree, showAlert, showImages, viewMode],
   );
 
   const onNoteVideoDrop = useCallback(
@@ -2065,6 +2235,55 @@ export default function App() {
       void insertVideosIntoNote(videos, at);
     },
     [insertVideosIntoNote, showAlert, viewMode],
+  );
+
+  const vaultNoteDrag = useCallback((e: DragEvent<HTMLElement>, readPayload: boolean) => {
+    const types = Array.from(e.dataTransfer.types || []);
+    const active = getActiveVaultDrag();
+    if (!types.includes("application/x-ob-note-path") && !active) return null;
+    const data = (readPayload ? parseVaultDrag(e) : null) || active;
+    if (!data || data.kind !== "file" || !isMarkdownNotePath(data.path)) return null;
+    return data;
+  }, []);
+
+  const onEditorDragOver = useCallback(
+    (e: DragEvent<HTMLElement>) => {
+      const ta = editorRef.current;
+      if (!ta || !vaultNoteDrag(e, false)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "copy";
+      const index = textareaDropIndex(ta, e.clientX, e.clientY);
+      if (document.activeElement !== ta) ta.focus({ preventScroll: true });
+      if (ta.selectionStart !== index || ta.selectionEnd !== index) {
+        ta.setSelectionRange(index, index);
+      }
+    },
+    [vaultNoteDrag],
+  );
+
+  const onEditorDrop = useCallback(
+    (e: DragEvent<HTMLElement>) => {
+      const ta = editorRef.current;
+      const data = vaultNoteDrag(e, true);
+      if (!ta || !data) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const link = wikiLinkMarkdown(data.path);
+      if (!link) return;
+      const start = textareaDropIndex(ta, e.clientX, e.clientY);
+      const before = ta.value.slice(0, start);
+      const after = ta.value.slice(start);
+      let chunk = link;
+      const left = before.slice(-1);
+      const right = after.slice(0, 1);
+      if (left && !/\s/.test(left)) chunk = ` ${chunk}`;
+      if (right && !/\s/.test(right)) chunk = `${chunk} `;
+      insertEditorText(ta, start, start, chunk);
+      ta.style.height = "auto";
+      ta.style.height = `${Math.max(ta.scrollHeight, 320)}px`;
+    },
+    [vaultNoteDrag],
   );
 
   const onFileMenuAction = useCallback(
@@ -2161,21 +2380,29 @@ export default function App() {
     (next: CompressJobStatus) => {
       if (next.status !== "ready" && next.status !== "error") return;
       const key = next.job_id || `${next.status}:${next.path}:${next.url || next.error || ""}`;
-      if (compressFinishRef.current === key) return;
+      if (compressFinishRef.current === key) {
+        compressBusyRef.current = false;
+        compressJobRef.current = null;
+        setCompressBusy(false);
+        setCompressPopupOpen(false);
+        return;
+      }
       compressFinishRef.current = key;
+      compressBusyRef.current = false;
+      compressJobRef.current = null;
       setCompressBusy(false);
       setCompressPopupOpen(false);
-      if (next.status === "ready" && next.url) {
-        const hours = Math.max(1, Math.round((next.expires_in || 3600) / 3600));
-        const zipName = next.zip_name || "archive.zip";
-        const subject = next.path
-          ? `${next.path.split("/").pop()} 폴더`
-          : "vault 전체";
-        void showAlert(
-          `${subject}를 ${zipName}으로 압축했습니다.\n다운로드 링크는 약 ${hours}시간 동안 유효합니다.`,
-          "Compress",
-          { href: next.url, label: "다운로드" },
-        );
+      setCompressProgress(null);
+      if (next.status === "ready") {
+        if (next.url) {
+          const link = document.createElement("a");
+          link.href = next.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+        }
         return;
       }
       void showAlert(next.error || next.message || "압축에 실패했습니다.", "Compress failed");
@@ -2185,6 +2412,17 @@ export default function App() {
 
   const startCompress = useCallback(
     async (target: { path?: string; scope: "folder" | "vault" }) => {
+      if (compressBusyRef.current) {
+        void showAlert(
+          "이미 압축이 진행 중입니다. 끝난 뒤에 다시 시도하세요.",
+          "Compress",
+        );
+        return;
+      }
+      compressBusyRef.current = true;
+      compressFinishRef.current = null;
+      compressSawActiveRef.current = false;
+      compressJobRef.current = null;
       setSettingsOpen(false);
       setAppearanceOpen(false);
       setViewOpen(false);
@@ -2201,18 +2439,128 @@ export default function App() {
           target.scope === "vault"
             ? await api.compressVault()
             : await api.compressFolder(target.path || "");
+        if (res.already_running) {
+          compressBusyRef.current = false;
+          compressJobRef.current = null;
+          setCompressBusy(false);
+          setCompressPopupOpen(false);
+          void showAlert(
+            res.message || "이미 압축이 진행 중입니다. 끝난 뒤에 다시 시도하세요.",
+            "Compress",
+          );
+          return;
+        }
+        if (res.job_id && compressFinishRef.current === res.job_id) return;
+        compressJobRef.current = res.job_id || null;
         setCompressMsg(res.message || "압축을 진행하고 있습니다…");
         if (res.progress) setCompressProgress(res.progress);
         const busy = res.status === "queued" || res.status === "running";
+        compressBusyRef.current = busy;
         setCompressBusy(busy);
         if (!busy) finishCompressJob(res);
       } catch (err) {
+        compressBusyRef.current = false;
+        compressJobRef.current = null;
         setCompressBusy(false);
         setCompressPopupOpen(false);
         void showAlert(err instanceof Error ? err.message : String(err), "Compress failed");
       }
     },
     [finishCompressJob, showAlert],
+  );
+
+  const startClearing = useCallback(async () => {
+    setSettingsOpen(false);
+    setAppearanceOpen(false);
+    setViewOpen(false);
+    setSharePermissionOpen(false);
+    setDocumentsMenuOpen(false);
+    setClearingOpen(false);
+    setClearingPopupOpen(true);
+    setClearingBusy(true);
+    setClearingMsg("미디어 참조 검사를 시작합니다…");
+    setClearingProgress({ pct: 0, phase: "queued" });
+    try {
+      const result = await api.startClearing();
+      if (result.status === "error" || result.ok === false) {
+        setClearingBusy(false);
+        setClearingMsg(result.message || "검사를 시작하지 못했습니다.");
+        return;
+      }
+      setClearingMsg(result.message || "미디어 참조를 검사하고 있습니다…");
+      if (result.progress) setClearingProgress(result.progress);
+      setClearingBusy(true);
+    } catch (err) {
+      setClearingBusy(false);
+      setClearingMsg(err instanceof Error ? err.message : "검사를 시작하지 못했습니다.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!clearingBusy) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function poll() {
+      try {
+        const next = await api.getClearingStatus();
+        if (cancelled) return;
+        const busy =
+          Boolean(next.busy) || next.status === "queued" || next.status === "running";
+        setClearingBusy(busy);
+        if (next.progress) setClearingProgress(next.progress);
+        if (busy) {
+          setClearingMsg(next.message || "미디어 참조를 검사하고 있습니다…");
+          timer = setTimeout(poll, 800);
+          return;
+        }
+        if (next.status === "ready" && next.scan) {
+          const key = next.job_id || String(next.updated_at || "");
+          setClearingMsg(next.message || "검사를 마쳤습니다.");
+          if (clearingOpenedRef.current !== key) {
+            clearingOpenedRef.current = key;
+            setClearingScan(next.scan);
+            setClearingPopupOpen(false);
+            setClearingOpen(true);
+          }
+          return;
+        }
+        if (next.status === "error") {
+          setClearingMsg(next.error || next.message || "검사에 실패했습니다.");
+        }
+      } catch {
+        if (cancelled) return;
+        timer = setTimeout(poll, 2000);
+      }
+    }
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [clearingBusy]);
+
+  const handleClearingDeleted = useCallback(
+    (paths: string[]) => {
+      if (!paths.length) return;
+      const dropped = new Set(paths);
+      let pins = pinnedPaths;
+      for (const path of paths) {
+        pins = removePinnedPaths(pins, path);
+        removeTreePath(path, false);
+      }
+      updatePinnedPaths(pins);
+      setTabs((prev) => prev.filter((tab) => !dropped.has(tab.path)));
+      if (activePath && dropped.has(activePath)) {
+        setActivePath(null);
+        setFile(null);
+        setDraft("");
+        setDirty(false);
+      }
+      void refreshTreeAfterMutation();
+    },
+    [activePath, pinnedPaths, refreshTreeAfterMutation, removeTreePath, updatePinnedPaths],
   );
 
   const onFolderMenuAction = useCallback(
@@ -2325,10 +2673,25 @@ export default function App() {
       try {
         const next = await api.getCompressStatus(abort.signal);
         if (cancelled) return;
-        if (next.status === "idle") {
+        if (
+          !compressJobRef.current ||
+          (next.job_id && next.job_id !== compressJobRef.current)
+        ) {
           timer = setTimeout(pollCompress, 400);
           return;
         }
+        if (next.status === "idle") {
+          if (compressSawActiveRef.current) {
+            compressBusyRef.current = false;
+            compressJobRef.current = null;
+            setCompressBusy(false);
+            setCompressPopupOpen(false);
+            return;
+          }
+          timer = setTimeout(pollCompress, 400);
+          return;
+        }
+        compressSawActiveRef.current = true;
         if (next.progress) setCompressProgress(next.progress);
         const busy = next.status === "queued" || next.status === "running";
         if (busy) {
@@ -2686,6 +3049,37 @@ export default function App() {
             <span>Compress</span>
           </button>
           <button
+            type="button"
+            className={`rail-settings-btn${clearingOpen || clearingPopupOpen || clearingBusy || clearingDeletePopupOpen || clearingDeleteBusy ? " is-active" : ""}`}
+            title="같은 폴더 마크다운에서 참조되지 않은 미디어를 검사합니다."
+            onClick={() => {
+              setAppearanceOpen(false);
+              setViewOpen(false);
+              setSharePermissionOpen(false);
+              setDocumentsMenuOpen(false);
+              setSettingsOpen(false);
+              if (clearingDeleteBusy) {
+                setClearingDeletePopupOpen(false);
+                setClearingOpen(true);
+                return;
+              }
+              if (clearingBusy) {
+                setClearingPopupOpen(true);
+                return;
+              }
+              void startClearing();
+            }}
+          >
+            <ClearingIcon />
+            <span>
+              {clearingDeleteBusy
+                ? "Clearing (삭제 중…)"
+                : clearingBusy
+                  ? "Clearing (검사 중…)"
+                  : "Clearing"}
+            </span>
+          </button>
+          <button
             ref={documentsBtnRef}
             type="button"
             className={`rail-settings-btn${documentsMenuOpen || documentsSyncBusy || documentsConfigureOpen || documentsListOpen ? " is-active" : ""}`}
@@ -2817,8 +3211,28 @@ export default function App() {
           busy={compressBusy}
           message={compressMsg}
           progress={compressProgress}
-          hint="완료되면 다운로드 링크가 열립니다. 이 창을 닫아도 압축은 계속됩니다."
+          hint="완료되면 다운로드가 열리고 이 창은 닫힙니다. 닫아도 압축은 계속됩니다."
           onClose={() => setCompressPopupOpen(false)}
+        />
+      )}
+      {clearingPopupOpen && (
+        <SyncProgressModal
+          title="Clearing"
+          busy={clearingBusy}
+          message={clearingMsg}
+          progress={clearingProgress}
+          hint="이 창을 닫아도 검사는 계속됩니다. 끝나면 목록이 열립니다."
+          onClose={() => setClearingPopupOpen(false)}
+        />
+      )}
+      {clearingDeletePopupOpen && !clearingOpen && (
+        <SyncProgressModal
+          title="Clearing 삭제"
+          busy={clearingDeleteBusy}
+          message={clearingDeleteMsg}
+          progress={clearingDeleteProgress}
+          hint="이 창을 닫아도 삭제는 계속됩니다. Settings의 Clearing에서 다시 볼 수 있습니다."
+          onClose={() => setClearingDeletePopupOpen(false)}
         />
       )}
       <SharedListModal open={sharedListOpen} onClose={() => setSharedListOpen(false)} />
@@ -2829,6 +3243,20 @@ export default function App() {
           setCompressListOpen(false);
           void startCompress({ scope: "vault" });
         }}
+      />
+      <ClearingListModal
+        open={clearingOpen}
+        scan={clearingScan}
+        onClose={() => setClearingOpen(false)}
+        onDeleted={handleClearingDeleted}
+        onRescan={() => void startClearing()}
+        onDeleteActivity={(info) => {
+          setClearingDeleteBusy(info.busy);
+          setClearingDeleteMsg(info.message);
+          setClearingDeleteProgress(info.progress ?? null);
+          if (!info.busy) setClearingDeletePopupOpen(false);
+        }}
+        onDeleteBackground={() => setClearingDeletePopupOpen(true)}
       />
       {notesGraphOpen && (
         <NotesGraphModal
@@ -2997,7 +3425,7 @@ export default function App() {
                 if (el.closest?.(".tree-item")) return;
                 if (isVaultMoveDrag(e) || hasExternalFileDrag(e)) {
                   e.preventDefault();
-                  e.dataTransfer.dropEffect = isVaultMoveDrag(e) ? "move" : "copy";
+                  e.dataTransfer.dropEffect = isVaultMoveDrag(e) ? vaultDropEffect("") : "copy";
                 }
               }}
               onDrop={(e) => {
@@ -3170,7 +3598,7 @@ export default function App() {
                     <button
                       type="button"
                       className="icon-btn"
-                      title="Open agent"
+                      data-tooltip="Open agent"
                       aria-label="Open agent"
                       onClick={() => {
                         if (!activePath) return;
@@ -3215,7 +3643,7 @@ export default function App() {
                     <button
                       type="button"
                       className="icon-btn"
-                      title="Open agent"
+                      data-tooltip="Open agent"
                       aria-label="Open agent"
                       onClick={() => {
                         if (!activePath) return;
@@ -3233,7 +3661,8 @@ export default function App() {
                     <button
                       type="button"
                       className="icon-btn"
-                      title="Preview"
+                      data-tooltip="Preview"
+                      aria-label="Preview"
                       onClick={() => setViewMode("preview")}
                       style={{ color: viewMode === "preview" ? "var(--accent)" : undefined }}
                     >
@@ -3242,7 +3671,8 @@ export default function App() {
                     <button
                       type="button"
                       className="icon-btn"
-                      title="Edit"
+                      data-tooltip="Edit"
+                      aria-label="Edit"
                       onClick={() => setViewMode("edit")}
                       style={{ color: viewMode === "edit" ? "var(--accent)" : undefined }}
                     >
@@ -3251,12 +3681,19 @@ export default function App() {
                     <button
                       type="button"
                       className="icon-btn"
-                      title="Save"
-                      onClick={() => void save()}
-                      disabled={saving || !dirty}
-                      style={{ opacity: dirty ? 1 : 0.4, fontSize: 11, width: "auto", padding: "0 8px" }}
+                      data-tooltip={saving ? "Saving…" : "Save"}
+                      aria-label={saving ? "Saving" : "Save"}
+                      aria-disabled={saving || !dirty}
+                      onClick={() => {
+                        if (saving || !dirty) return;
+                        void save();
+                      }}
+                      style={{
+                        opacity: dirty && !saving ? 1 : 0.4,
+                        cursor: dirty && !saving ? undefined : "default",
+                      }}
                     >
-                      {saving ? "Saving…" : "Save"}
+                      <SaveIcon />
                     </button>
                   </div>
                 </div>
@@ -3269,9 +3706,14 @@ export default function App() {
                   onDrop={onNoteVideoDrop}
                 >
                   {viewMode === "edit" ? (
-                    <div className="editor-pane">
+                    <div
+                      className="editor-pane"
+                      onDragOver={onEditorDragOver}
+                      onDrop={onEditorDrop}
+                    >
                       <textarea
-                        value={draft}
+                        key={activePath}
+                        defaultValue={draft}
                         onChange={(e) => {
                           const el = e.target;
                           setDraft(el.value);

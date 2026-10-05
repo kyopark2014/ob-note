@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Documents sync — PDF/docs → markdown (projects + drawings).
+"""Documents sync — PDF/office/text → markdown (projects + drawings).
 
 Mirrors the document staging path from wiki/ESS sync:
   - classical: pdfplumber / pypdf
@@ -51,14 +51,7 @@ if str(_REPO_ROOT) not in sys.path:
 if str(_APPLICATION_DIR) not in sys.path:
     sys.path.insert(0, str(_APPLICATION_DIR))
 
-_DOC_EXTS = {
-    ".pdf",
-    ".md",
-    ".txt",
-    ".text",
-    ".rst",
-    ".markdown",
-}
+from doc_list import SOURCE_SUFFIXES as _DOC_EXTS  # noqa: E402
 
 
 def _project_root() -> Path:
@@ -130,24 +123,11 @@ def _load_manifest(out_dir: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _has_non_md_source(docs_dir: Path, stem: str) -> bool:
-    """True when ``stem.pdf`` / ``stem.txt`` / … exists (extraction sidecar peer)."""
-    for ext in (".pdf", ".txt", ".text", ".rst", ".markdown"):
-        if (docs_dir / f"{stem}{ext}").is_file():
-            return True
-    return False
-
-
 def _is_extraction_sidecar(path: Path) -> bool:
     """Skip generated ``{stem}.md`` / ``{stem}.json`` sitting next to a source."""
-    suf = path.suffix.lower()
-    parent = path.parent
-    stem = path.stem
-    if suf == ".json":
-        return _has_non_md_source(parent, stem) or (parent / f"{stem}.md").is_file()
-    if suf == ".md":
-        return _has_non_md_source(parent, stem)
-    return False
+    from doc_list import _is_sidecar
+
+    return _is_sidecar(path, path.parent)
 
 
 def _list_source_docs(docs_dir: Path) -> list[Path]:
@@ -264,6 +244,11 @@ def _doc_to_markdown_body(
         return src.read_text(encoding="utf-8", errors="replace")
     if suffix in {".txt", ".text", ".rst", ".markdown"}:
         return src.read_text(encoding="utf-8", errors="replace")
+    if suffix in _DOC_EXTS and suffix != ".pdf":
+        from office_to_markdown import office_to_markdown
+
+        body = office_to_markdown(src).strip()
+        return f"# {src.stem}\n\nSource: `{src.name}`\n\n{body}"
     if suffix == ".pdf":
         body = _pdf_to_text(
             src,
@@ -478,7 +463,11 @@ def _write_extraction_outputs(
     extracted_at = datetime.now(timezone.utc).isoformat()
     out_dir = src.parent
     md_name = f"{src.stem}.md"
-    json_name = f"{src.stem}.json"
+    # A JSON upload is itself ``{stem}.json``; keep extraction meta beside it.
+    if src.suffix.lower() == ".json":
+        json_name = f"{src.stem}.docmeta.json"
+    else:
+        json_name = f"{src.stem}.json"
     md_path = out_dir / md_name
     json_path = out_dir / json_name
 
@@ -1049,7 +1038,9 @@ def sync_user(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Documents sync (PDF→markdown)")
+    parser = argparse.ArgumentParser(
+        description="Documents sync (PDF/office/text → markdown)"
+    )
     parser.add_argument("--user", required=True, help="User id")
     parser.add_argument(
         "--full",

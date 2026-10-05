@@ -11,6 +11,7 @@ import logging
 import re
 import sqlite3
 import threading
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,6 +114,29 @@ def _norm_rel(path: str) -> str:
     return (path or "").replace("\\", "/").strip("/")
 
 
+def _nfc_rel(path: str) -> str:
+    """NFC path key. macOS and S3 often store the same folder as NFD."""
+    return unicodedata.normalize("NFC", _norm_rel(path))
+
+
+def _same_or_under(path: str, root: str) -> bool:
+    target = _nfc_rel(path)
+    base = _nfc_rel(root)
+    return bool(base) and (target == base or target.startswith(base + "/"))
+
+
+def _select_note(conn: sqlite3.Connection, rel: str) -> Optional[sqlite3.Row]:
+    """Find a note row even when the stored spelling is NFC and the lookup is NFD."""
+    row = conn.execute("SELECT * FROM notes WHERE path = ?", (rel,)).fetchone()
+    if row:
+        return row
+    key = _nfc_rel(rel)
+    for candidate in conn.execute("SELECT * FROM notes").fetchall():
+        if _nfc_rel(candidate["path"]) == key:
+            return candidate
+    return None
+
+
 def ensure_db() -> None:
     with _lock:
         conn = _connect()
@@ -142,7 +166,7 @@ def get_by_path(path: str) -> Optional[dict[str, Any]]:
         conn = _connect()
         try:
             _ensure_schema(conn)
-            row = conn.execute("SELECT * FROM notes WHERE path = ?", (rel,)).fetchone()
+            row = _select_note(conn, rel)
             return _row_to_dict(row)
         finally:
             conn.close()
@@ -218,7 +242,7 @@ def upsert_note(
         conn = _connect()
         try:
             _ensure_schema(conn)
-            existing = conn.execute("SELECT * FROM notes WHERE path = ?", (rel,)).fetchone()
+            existing = _select_note(conn, rel)
             created = False
             if existing:
                 nid = existing["note_id"]
@@ -228,10 +252,10 @@ def upsert_note(
                 conn.execute(
                     """
                     UPDATE notes
-                    SET title = ?, size_bytes = ?, updated_at = ?, created_at = ?
+                    SET path = ?, title = ?, size_bytes = ?, updated_at = ?, created_at = ?
                     WHERE note_id = ?
                     """,
-                    (resolved_title, int(size_bytes), now, created_at, nid),
+                    (rel, resolved_title, int(size_bytes), now, created_at, nid),
                 )
                 logger.info(
                     "notes_db update path=%s note_id=%s size=%s",
@@ -346,7 +370,7 @@ def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
     """
     src = _norm_rel(from_path)
     dst = _norm_rel(to_path)
-    if not src or not dst or src == dst:
+    if not src or not dst or _nfc_rel(src) == _nfc_rel(dst):
         return get_by_path(dst) if dst else None
 
     now = _utc_now()
@@ -356,7 +380,7 @@ def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
         conn = _connect()
         try:
             _ensure_schema(conn)
-            row = conn.execute("SELECT * FROM notes WHERE path = ?", (src,)).fetchone()
+            row = _select_note(conn, src)
             if row:
                 dest = conn.execute(
                     "SELECT * FROM notes WHERE path = ?", (dst,)
@@ -394,15 +418,19 @@ def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
                 )
                 _schedule_persist()
             else:
-                # Folder rename: remap descendants.
-                prefix = src + "/"
-                rows = conn.execute(
-                    "SELECT note_id, path FROM notes WHERE path LIKE ?",
-                    (prefix + "%",),
-                ).fetchall()
+                # Folder rename: remap descendants. Compare NFC so an NFD
+                # folder name still matches the stored row.
+                src_key = _nfc_rel(src)
+                dst_key = _nfc_rel(dst)
+                rows = [
+                    r
+                    for r in conn.execute("SELECT note_id, path FROM notes").fetchall()
+                    if _nfc_rel(r["path"]).startswith(src_key + "/")
+                ]
                 for r in rows:
                     old = r["path"]
-                    new_path = dst + old[len(src) :]
+                    suffix = _nfc_rel(old)[len(src_key) :]
+                    new_path = dst_key + suffix
                     clash = conn.execute(
                         "SELECT note_id FROM notes WHERE path = ?", (new_path,)
                     ).fetchone()
@@ -464,15 +492,13 @@ def delete_note(path: str) -> int:
             _ensure_schema(conn)
             note_ids = [
                 r["note_id"]
-                for r in conn.execute(
-                    "SELECT note_id FROM notes WHERE path = ? OR path LIKE ?",
-                    (rel, rel + "/%"),
-                ).fetchall()
+                for r in conn.execute("SELECT note_id, path FROM notes").fetchall()
+                if _same_or_under(r["path"], rel)
             ]
-            cur = conn.execute("DELETE FROM notes WHERE path = ?", (rel,))
-            deleted = cur.rowcount
-            cur = conn.execute("DELETE FROM notes WHERE path LIKE ?", (rel + "/%",))
-            deleted += cur.rowcount
+            deleted = 0
+            for nid in note_ids:
+                cur = conn.execute("DELETE FROM notes WHERE note_id = ?", (nid,))
+                deleted += cur.rowcount
             conn.commit()
         finally:
             conn.close()
@@ -503,10 +529,9 @@ def sync_from_filesystem() -> dict[str, int]:
         conn = _connect()
         try:
             _ensure_schema(conn)
-            existing = {
-                r["path"]: r
-                for r in conn.execute("SELECT * FROM notes").fetchall()
-            }
+            existing_by_key: dict[str, list[sqlite3.Row]] = {}
+            for row in conn.execute("SELECT * FROM notes").fetchall():
+                existing_by_key.setdefault(_nfc_rel(row["path"]), []).append(row)
             now = _utc_now()
             for rel, path in on_disk.items():
                 try:
@@ -522,8 +547,8 @@ def sync_from_filesystem() -> dict[str, int]:
                     logger.exception("notes_db sync failed for %s", rel)
                     continue
 
-                row = existing.pop(rel, None)
-                if row is None:
+                rows = existing_by_key.pop(_nfc_rel(rel), [])
+                if not rows:
                     conn.execute(
                         """
                         INSERT INTO notes (note_id, title, path, size_bytes, created_at, updated_at)
@@ -532,24 +557,30 @@ def sync_from_filesystem() -> dict[str, int]:
                         (new_note_id(), title, rel, size, ctime_iso, mtime_iso),
                     )
                     added += 1
-                else:
-                    # Keep created_at; refresh title/size/updated when file changed.
-                    prev_size = int(row["size_bytes"] or 0)
-                    prev_title = row["title"] or ""
-                    if prev_size != size or prev_title != title:
-                        conn.execute(
-                            """
-                            UPDATE notes
-                            SET title = ?, size_bytes = ?, updated_at = ?
-                            WHERE note_id = ?
-                            """,
-                            (title, size, mtime_iso or now, row["note_id"]),
-                        )
-                        updated += 1
+                    continue
+                # Same file stored under another Unicode spelling keeps its note_id.
+                rows.sort(key=lambda item: (item["path"] != rel, item["created_at"] or ""))
+                row = rows[0]
+                for extra in rows[1:]:
+                    conn.execute("DELETE FROM notes WHERE note_id = ?", (extra["note_id"],))
+                    removed += 1
+                prev_size = int(row["size_bytes"] or 0)
+                prev_title = row["title"] or ""
+                if row["path"] != rel or prev_size != size or prev_title != title:
+                    conn.execute(
+                        """
+                        UPDATE notes
+                        SET path = ?, title = ?, size_bytes = ?, updated_at = ?
+                        WHERE note_id = ?
+                        """,
+                        (rel, title, size, mtime_iso or now, row["note_id"]),
+                    )
+                    updated += 1
 
-            for orphan_path, row in existing.items():
-                conn.execute("DELETE FROM notes WHERE note_id = ?", (row["note_id"],))
-                removed += 1
+            for rows in existing_by_key.values():
+                for row in rows:
+                    conn.execute("DELETE FROM notes WHERE note_id = ?", (row["note_id"],))
+                    removed += 1
 
             conn.commit()
         finally:

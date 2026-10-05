@@ -1,4 +1,4 @@
-"""Move images referenced by a note when the note changes folders.
+"""Move or copy images referenced by a note when the note changes folders.
 
 Companion assets live alongside the note (same directory, relative refs like
 ``![alt](img.png)`` or ``![[img.png]]``). Moving the note alone would leave
@@ -12,6 +12,7 @@ import logging
 import re
 import shutil
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import unquote
@@ -61,6 +62,11 @@ def _parent_rel(path: str) -> str:
     if "/" not in cleaned:
         return ""
     return cleaned.rsplit("/", 1)[0]
+
+
+def _parent_key(path: str) -> str:
+    """NFC parent. A Korean folder is the same folder in NFD."""
+    return unicodedata.normalize("NFC", _parent_rel(path))
 
 
 def _is_remote_or_absolute(ref: str) -> bool:
@@ -152,7 +158,7 @@ def companion_image_pairs(from_note: str, to_note: str, text: str) -> list[tuple
     to_rel = _norm_rel(to_note)
     from_parent = _parent_rel(from_rel)
     to_parent = _parent_rel(to_rel)
-    if from_parent == to_parent:
+    if _parent_key(from_rel) == _parent_key(to_rel):
         return []
 
     pairs: list[tuple[str, str]] = []
@@ -178,7 +184,7 @@ def move_companion_images(from_note: str, to_note: str) -> dict[str, Any]:
     """
     to_rel = _norm_rel(to_note)
     from_rel = _norm_rel(from_note)
-    if _parent_rel(from_rel) == _parent_rel(to_rel):
+    if _parent_key(from_rel) == _parent_key(to_rel):
         return {"ok": True, "moved": [], "skipped": [], "reason": "same_folder"}
 
     try:
@@ -256,9 +262,91 @@ def move_companion_images(from_note: str, to_note: str) -> dict[str, Any]:
     return {"ok": True, "moved": moved, "skipped": skipped}
 
 
+def copy_companion_images(from_note: str, to_note: str) -> dict[str, Any]:
+    """Copy same-folder images referenced by the note. Existing files are overwritten.
+
+    The note must already exist at ``to_note``. Source images stay in place.
+    """
+    to_rel = _norm_rel(to_note)
+    from_rel = _norm_rel(from_note)
+    if _parent_key(from_rel) == _parent_key(to_rel):
+        return {"ok": True, "copied": [], "skipped": [], "reason": "same_folder"}
+
+    try:
+        target = vault_backend.resolve_vault_path(to_rel)
+    except ValueError as exc:
+        return {"ok": False, "copied": [], "skipped": [], "error": str(exc)}
+
+    if not target.is_file():
+        vault_sync.ensure_local_file(to_rel)
+        try:
+            target = vault_backend.resolve_vault_path(to_rel)
+        except ValueError as exc:
+            return {"ok": False, "copied": [], "skipped": [], "error": str(exc)}
+    if not target.is_file():
+        return {"ok": False, "copied": [], "skipped": [], "error": "note_missing"}
+
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return {"ok": False, "copied": [], "skipped": [], "error": str(exc)}
+
+    pairs = companion_image_pairs(from_rel, to_rel, text)
+    if not pairs:
+        return {"ok": True, "copied": [], "skipped": [], "reason": "no_refs"}
+
+    copied: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    s3_mode = vault_backend.backend_mode() == "s3"
+
+    for src_rel, dst_rel in pairs:
+        try:
+            src = vault_backend.resolve_vault_path(src_rel)
+        except ValueError:
+            skipped.append({"from": src_rel, "to": dst_rel, "reason": "invalid_src"})
+            continue
+        if not src.is_file():
+            found = vault_sync.ensure_local_file(src_rel)
+            if found is None or not found.is_file():
+                skipped.append({"from": src_rel, "to": dst_rel, "reason": "missing"})
+                continue
+            src = found
+
+        try:
+            dst = vault_backend.resolve_vault_path(dst_rel)
+        except ValueError:
+            skipped.append({"from": src_rel, "to": dst_rel, "reason": "invalid_dst"})
+            continue
+        if dst.exists() and not dst.is_file():
+            skipped.append({"from": src_rel, "to": dst_rel, "reason": "dest_not_file"})
+            continue
+
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(src), str(dst))
+            if s3_mode:
+                vault_sync.enqueue_put(dst_rel)
+            copied.append({"from": src_rel, "to": dst_rel})
+        except Exception as exc:
+            logger.exception("Companion image copy failed %s → %s", src_rel, dst_rel)
+            skipped.append({"from": src_rel, "to": dst_rel, "reason": str(exc)})
+
+    if s3_mode and copied:
+        vault_sync.schedule_flush_pending()
+
+    logger.info(
+        "Companion images copied %s → %s: copied=%d skipped=%d",
+        from_rel,
+        to_rel,
+        len(copied),
+        len(skipped),
+    )
+    return {"ok": True, "copied": copied, "skipped": skipped}
+
+
 def parents_differ(from_path: str, to_path: str) -> bool:
     """True when renaming/moving changes the parent folder."""
-    return _parent_rel(from_path) != _parent_rel(to_path)
+    return _parent_key(from_path) != _parent_key(to_path)
 
 
 def schedule_move_companion_images(from_note: str, to_note: str) -> bool:
@@ -267,7 +355,7 @@ def schedule_move_companion_images(from_note: str, to_note: str) -> bool:
     to_rel = _norm_rel(to_note)
     if not from_rel or not to_rel:
         return False
-    if _parent_rel(from_rel) == _parent_rel(to_rel):
+    if _parent_key(from_rel) == _parent_key(to_rel):
         return False
     if Path(to_rel).suffix.lower() not in {".md", ".markdown"}:
         return False
@@ -289,6 +377,39 @@ def schedule_move_companion_images(from_note: str, to_note: str) -> bool:
     threading.Thread(
         target=worker,
         name=f"vault-companion-images-{Path(to_rel).name}",
+        daemon=True,
+    ).start()
+    return True
+
+
+def schedule_copy_companion_images(from_note: str, to_note: str) -> bool:
+    """Queue companion image copies on a daemon thread. Returns True if queued."""
+    from_rel = _norm_rel(from_note)
+    to_rel = _norm_rel(to_note)
+    if not from_rel or not to_rel:
+        return False
+    if _parent_key(from_rel) == _parent_key(to_rel):
+        return False
+    if Path(to_rel).suffix.lower() not in {".md", ".markdown"}:
+        return False
+
+    user_id = vault_backend.current_user_id()
+    if not user_id:
+        logger.warning("Cannot schedule companion image copy: no vault user")
+        return False
+
+    def worker() -> None:
+        try:
+            with vault_backend.user_scope(user_id):
+                copy_companion_images(from_rel, to_rel)
+        except Exception:
+            logger.exception(
+                "Background companion image copy failed %s → %s", from_rel, to_rel
+            )
+
+    threading.Thread(
+        target=worker,
+        name=f"vault-companion-copy-{Path(to_rel).name}",
         daemon=True,
     ).start()
     return True

@@ -42,6 +42,8 @@ PROJECTS = DocRegistry(PROJECT_LIST_NAME, PROJECTS_DIR_NAME)
 DRAWINGS = DocRegistry(DRAWINGS_LIST_NAME, DRAWINGS_DIR_NAME)
 DEFAULT_REGISTRY = PROJECTS
 
+# Text/PDF plus office formats the docx / pptx / xlsx skills can read.
+# ``.json`` metadata written beside a non-json source is a sidecar, not a source.
 _SOURCE_SUFFIXES = {
     ".pdf",
     ".md",
@@ -49,7 +51,23 @@ _SOURCE_SUFFIXES = {
     ".text",
     ".rst",
     ".markdown",
+    ".html",
+    ".htm",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".doc",
+    ".docx",
+    ".dotx",
+    ".ppt",
+    ".pptx",
+    ".potx",
+    ".xls",
+    ".xlsx",
+    ".xlsm",
+    ".xltx",
 }
+SOURCE_SUFFIXES = _SOURCE_SUFFIXES
 # Keep letters/digits/._- ; collapse everything else (spaces, unicode punct, …).
 _UNSAFE_FILENAME_RE = re.compile(r"[^0-9A-Za-z._-]+")
 _MULTI_SEP_RE = re.compile(r"[_.-]{2,}")
@@ -484,22 +502,48 @@ def remove_document(
     return True
 
 
+def _looks_like_extraction_meta(path: Path) -> bool:
+    """True for Sync's ``{stem}.json`` (not a user-uploaded JSON document)."""
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace")[:2000]
+    except OSError:
+        return False
+    return (
+        '"extracted_at"' in head
+        and '"extracted_by"' in head
+        and '"json_filename"' in head
+    )
+
+
+def _peer_source_exists(
+    docs_path: Path,
+    stem: str,
+    *,
+    skip: set[str],
+) -> bool:
+    for ext in _SOURCE_SUFFIXES - skip:
+        if (docs_path / f"{stem}{ext}").is_file():
+            return True
+    return False
+
+
 def _is_sidecar(
     path: Path,
     docs_path: Path,
     registry: DocRegistry = DEFAULT_REGISTRY,
 ) -> bool:
+    """True for generated ``{stem}.md`` / ``{stem}.json`` next to a real source."""
+    if path.name.endswith(".docmeta.json"):
+        return True
     suf = path.suffix.lower()
     stem = path.stem
     if suf == ".json":
-        for ext in _SOURCE_SUFFIXES - {".md"}:
-            if (docs_path / f"{stem}{ext}").is_file():
-                return True
-        return (docs_path / f"{stem}.md").is_file()
+        if _looks_like_extraction_meta(path):
+            return True
+        # Extraction JSON beside pdf/docx/… — not beside a JSON upload's own name.
+        return _peer_source_exists(docs_path, stem, skip={".json", ".md"})
     if suf == ".md":
-        for ext in (".pdf", ".txt", ".text", ".rst", ".markdown"):
-            if (docs_path / f"{stem}{ext}").is_file():
-                return True
+        return _peer_source_exists(docs_path, stem, skip={".md"})
     return False
 
 
@@ -686,20 +730,10 @@ def sanitize_existing_docs_filenames(
                         dest.write_text(updated, encoding="utf-8")
 
         for old_name, dest in moved:
-            if dest.suffix.lower() in {
-                ".pdf",
-                ".txt",
-                ".text",
-                ".rst",
-                ".markdown",
-                ".xlsx",
-            } or (
-                dest.suffix.lower() == ".md"
-                and not any(
-                    (docs_path / f"{new_stem}{e}").is_file()
-                    for e in (".pdf", ".txt", ".text", ".rst", ".markdown")
-                )
-            ):
+            dest_suf = dest.suffix.lower()
+            if dest.name.endswith(".docmeta.json"):
+                continue
+            if dest_suf in source_suffixes and not _is_sidecar(dest, docs_path, registry):
                 renames.append(
                     {
                         "from": old_name,

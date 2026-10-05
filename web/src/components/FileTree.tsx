@@ -199,6 +199,28 @@ export function isVaultMoveDrag(e: DragEvent): boolean {
   return isInternalMoveDrag(e) || Array.from(e.dataTransfer.types || []).includes("text/plain");
 }
 
+export function isMarkdownNotePath(path: string): boolean {
+  return /\.(md|markdown)$/i.test(path);
+}
+
+let activeVaultDrag: DragPayload | null = null;
+
+export function setActiveVaultDrag(payload: DragPayload | null): void {
+  activeVaultDrag = payload;
+}
+
+export function getActiveVaultDrag(): DragPayload | null {
+  return activeVaultDrag;
+}
+
+/** Markdown notes copy into another folder. Same-folder reorder stays a move. */
+export function vaultDropEffect(targetFolder: string): "copy" | "move" {
+  const drag = activeVaultDrag;
+  if (!drag || drag.kind !== "file" || !isMarkdownNotePath(drag.path)) return "move";
+  if (parentDir(drag.path) === targetFolder) return "move";
+  return "copy";
+}
+
 export function hasExternalFileDrag(e: DragEvent): boolean {
   return hasExternalFiles(e);
 }
@@ -345,6 +367,7 @@ function FileTreeRoot(props: Props) {
 
   useEffect(() => {
     function onDragEnd() {
+      setActiveVaultDrag(null);
       clear();
     }
     window.addEventListener("dragend", onDragEnd);
@@ -404,7 +427,7 @@ function FileTreeBranch(props: Props) {
               if (isInternalMoveDrag(e) || hasExternalFiles(e) || e.dataTransfer.types.includes("text/plain")) {
                 e.preventDefault();
                 e.dataTransfer.dropEffect =
-                  isInternalMoveDrag(e) || !hasExternalFiles(e) ? "move" : "copy";
+                  hasExternalFiles(e) && !isInternalMoveDrag(e) ? "copy" : vaultDropEffect("");
               }
               if (!onChildItem) setHighlight({ mode: "folder", path: "" });
             }
@@ -536,13 +559,16 @@ function TreeRow({
     if (!canDnD) return;
     e.preventDefault();
     e.stopPropagation();
-    e.dataTransfer.dropEffect =
-      isInternalMoveDrag(e) || !hasExternalFiles(e) ? "move" : "copy";
-
     const dragPath = dragging?.path;
     const sameFolder =
       !!dragPath && parentDir(dragPath) === folderPath && dragPath !== node.path;
     const place = insertPlaceFromEvent(e, e.currentTarget, isFolder);
+    const intoFolder = isFolder && (place === "into" || !sameFolder);
+    const targetFolder = intoFolder ? node.path : folderPath;
+    e.dataTransfer.dropEffect =
+      hasExternalFiles(e) && !isInternalMoveDrag(e)
+        ? "copy"
+        : vaultDropEffect(targetFolder);
 
     if (sameFolder && onReorder && (place === "before" || place === "after")) {
       setHighlight({ mode: "insert", path: node.path, place });
@@ -643,10 +669,12 @@ function TreeRow({
               suppressClick.current = true;
               const payload: DragPayload = { path: node.path, kind: "folder" };
               setVaultMoveDataTransfer(e.dataTransfer, payload.path, payload.kind);
+              setActiveVaultDrag(payload);
               setDragging(payload);
               setHighlight(null);
             }}
             onDragEnd={() => {
+              setActiveVaultDrag(null);
               clear();
               window.setTimeout(() => {
                 suppressClick.current = false;
@@ -697,7 +725,9 @@ function TreeRow({
                     e.preventDefault();
                     e.stopPropagation();
                     e.dataTransfer.dropEffect =
-                      isInternalMoveDrag(e) || !hasExternalFiles(e) ? "move" : "copy";
+                      hasExternalFiles(e) && !isInternalMoveDrag(e)
+                        ? "copy"
+                        : vaultDropEffect(node.path);
                     setHighlight({ mode: "folder", path: node.path });
                   }
                 : undefined
@@ -780,10 +810,12 @@ function TreeRow({
         suppressClick.current = true;
         const payload: DragPayload = { path: node.path, kind: "file" };
         setVaultMoveDataTransfer(e.dataTransfer, payload.path, payload.kind);
+        setActiveVaultDrag(payload);
         setDragging(payload);
         setHighlight(null);
       }}
       onDragEnd={() => {
+        setActiveVaultDrag(null);
         clear();
         // Keep suppress a beat so the synthetic click after drag does not open the file.
         window.setTimeout(() => {

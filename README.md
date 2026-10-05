@@ -487,7 +487,7 @@ GET /s/{token}/w/{vault/path.md}  # Share permission 범위 안의 위키 대상
 
 ## ECS / ALB
 
-1. **S3**: 프로젝트 버킷 — `{userId}/vault/` (markdown API sync). notes.db·backup은 버킷 루트
+1. **S3**: 프로젝트 버킷 — `{userId}/vault/` (markdown API sync), `{userId}/backup/` (compress zip). notes.db는 `{userId}/notes.db`
 2. **S3 Files (ECS only)**: 버킷 `/` → 컨테이너 `/mnt/app-data` (notes.db persist)
 3. **ECS 서비스**: 이 이미지, 포트 `8502`, health `/api/health`
 4. **ALB listener rule**: path `/*` (+ CloudFront origin header) → ob-note target group

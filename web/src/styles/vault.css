@@ -923,6 +923,8 @@ html[data-theme="light"] .tree-item.selected {
 }
 
 .toolbar {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1869,6 +1871,103 @@ a.modal-btn {
 .compress-list-modal {
   width: min(760px, 94vw);
   max-width: 760px;
+}
+
+.clearing-list-modal {
+  width: min(760px, 94vw);
+  max-width: 760px;
+}
+
+.clearing-list-lead {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.clearing-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.clearing-list-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.clearing-list-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.clearing-delete-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-sidebar);
+}
+
+.clearing-delete-progress .sync-progress-spinner {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.clearing-delete-progress-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.clearing-delete-progress-message {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.clearing-delete-progress-file {
+  margin: 0 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.clearing-kept-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.clearing-kept-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.clearing-kept-link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .compress-list-header-actions {

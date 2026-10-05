@@ -531,17 +531,12 @@ def remove_shares_for_path(deleted: str) -> int:
         pull_shares_registry()
         data = _load()
         shares = data.get("shares") or {}
+        cleaned_key = _nfc_rel(cleaned)
         drop = [
             tok
             for tok, entry in shares.items()
             if isinstance(entry, dict)
-            and (
-                (entry.get("path") or "").replace("\\", "/").lstrip("/") == cleaned
-                or str(entry.get("path") or "")
-                .replace("\\", "/")
-                .lstrip("/")
-                .startswith(cleaned + "/")
-            )
+            and _same_or_under_share(str(entry.get("path") or ""), cleaned_key)
         ]
         for tok in drop:
             shares.pop(tok, None)
@@ -591,27 +586,41 @@ def _s3_object_key(rel_path: str) -> Optional[tuple[str, str, str]]:
     return bucket, region, vault_backend.s3_prefix() + cleaned
 
 
+def _nfc_rel(path: str) -> str:
+    return unicodedata.normalize("NFC", (path or "").replace("\\", "/").lstrip("/"))
+
+
+def _same_or_under_share(path: str, root_key: str) -> bool:
+    target = _nfc_rel(path)
+    return bool(root_key) and (target == root_key or target.startswith(root_key + "/"))
+
+
 def vault_object_exists(rel_path: str) -> bool:
-    """True if file exists on local vault or as an S3 object."""
+    """True if file exists on local vault or as an S3 object.
+
+    Tries both Unicode spellings. A Korean folder stored as NFD must not look
+    missing when the share path is NFC, or the share link is revoked.
+    """
     cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
     if not cleaned:
         return False
-    try:
-        if vault_backend.resolve_vault_path(cleaned).is_file():
-            return True
-    except ValueError:
-        pass
-    loc = _s3_object_key(cleaned)
-    if not loc:
-        return False
-    bucket, region, key = loc
-    try:
-        import boto3
+    spellings = []
+    for form in (
+        cleaned,
+        unicodedata.normalize("NFC", cleaned),
+        unicodedata.normalize("NFD", cleaned),
+    ):
+        if form and form not in spellings:
+            spellings.append(form)
+    for form in spellings:
+        try:
+            if vault_backend.resolve_vault_path(form).is_file():
+                return True
+        except ValueError:
+            continue
+    from application import vault_sync
 
-        boto3.client("s3", region_name=region).head_object(Bucket=bucket, Key=key)
-        return True
-    except Exception:
-        return False
+    return vault_sync.remote_file_exists(cleaned)
 
 
 def vault_folder_exists(rel_path: str) -> bool:
@@ -1058,8 +1067,8 @@ def folder_sibling_full_path(folder_path: str, basename: str) -> str:
 
 
 def is_folder_share_direct_child(folder_path: str, rel_path: str) -> bool:
-    folder = (folder_path or "").replace("\\", "/").lstrip("/")
-    rel = (rel_path or "").replace("\\", "/").lstrip("/")
+    folder = _nfc_rel(folder_path)
+    rel = _nfc_rel(rel_path)
     if not rel or ".." in rel.split("/"):
         return False
     if not folder:

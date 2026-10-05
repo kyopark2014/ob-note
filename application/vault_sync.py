@@ -973,19 +973,28 @@ def sync_from_s3_incremental(
         vault_backend._sync_lock.release()
 
 
+def _prune_identity(rel: str) -> str:
+    """Identity for "does S3 already have this file?"
+
+    NFC folds macOS/S3 NFD names (``호텔``) onto the same key. casefold keeps the
+    existing macOS behavior of not deleting ``agent/`` when S3 has ``Agent/``.
+    """
+    return unicodedata.normalize("NFC", rel).casefold()
+
+
 def _prune_local_not_in_remote(root: Path, remote_exact: set[str]) -> int:
     """Delete local vault files that are not present on S3.
 
-    Matching is exact (case-sensitive) first. If the local path only matches an
-    S3 key ignoring case (macOS APFS), keep it so ``agent/`` vs ``Agent/``
-    downloads are not deleted when the volume cannot store both spellings.
+    A local file is kept when S3 has the same path, the same path in the other
+    Unicode form (NFC/NFD), or a case-only variant. ``agent/`` and ``Agent/``
+    are still not treated as a reason to delete the other spelling.
 
     Never prune ``.vault/`` (settings, pending queue, Notes Graph cache under
     ``.vault/cache/notes-graphify/``). Those are local/derived and are not
     mirrored as user notes — deleting them after Sync made Graph disappear.
     """
     pruned = 0
-    remote_lower = {r.lower() for r in remote_exact}
+    remote_ids = {_prune_identity(r) for r in remote_exact}
     files: list[Path] = []
     for path in root.rglob("*"):
         if not path.is_file():
@@ -997,10 +1006,7 @@ def _prune_local_not_in_remote(root: Path, remote_exact: set[str]) -> int:
         # Keep all local settings / graph artifacts / sync metadata.
         if rel == ".vault" or rel.startswith(".vault/"):
             continue
-        if rel in remote_exact:
-            continue
-        if rel.lower() in remote_lower:
-            # Case-insensitive volume: S3 has a differently-cased key for this path.
+        if _prune_identity(rel) in remote_ids:
             continue
         files.append(path)
 

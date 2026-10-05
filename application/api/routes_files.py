@@ -18,6 +18,7 @@ from application.api.routes_auth import require_user_id
 from application import (
     notes_db,
     vault_backend,
+    vault_clearing,
     vault_compress,
     vault_companion_assets,
     vault_index,
@@ -65,6 +66,8 @@ INLINE_BINARY_EXTENSIONS = {
     ".mp4",
     ".m4v",
     ".webm",
+    ".mp3",
+    ".wav",
 }
 VIDEO_EXTENSIONS = {
     ".mp4",
@@ -154,6 +157,11 @@ class RenameBody(BaseModel):
     to_path: str = Field(..., min_length=1, max_length=1024)
 
 
+class CopyBody(BaseModel):
+    from_path: str = Field(..., min_length=1, max_length=1024)
+    to_path: str = Field(..., min_length=1, max_length=1024)
+
+
 class DeleteBody(BaseModel):
     path: str = Field(..., min_length=1, max_length=1024)
 
@@ -169,6 +177,11 @@ class CompressBody(BaseModel):
 
 class CompressItemBody(BaseModel):
     id: str = Field(..., min_length=8, max_length=64)
+
+
+class ClearingPathsBody(BaseModel):
+    paths: list[str] = Field(default_factory=list, max_length=500)
+    all: bool = False
 
 
 class ReorderBody(BaseModel):
@@ -793,6 +806,64 @@ def rename(request: Request, body: RenameBody) -> dict:
     }
 
 
+@router.post("/copy")
+def copy_path(request: Request, body: CopyBody) -> dict:
+    """Copy a file to ``to_path``, overwriting an existing file. Source stays."""
+    require_user_id(request)
+    try:
+        src = vault_backend.resolve_vault_path(body.from_path)
+        dst = vault_backend.resolve_vault_path(body.to_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="Source not found")
+    if not src.is_file():
+        raise HTTPException(status_code=400, detail="Only files can be copied")
+    if dst.exists() and not dst.is_file():
+        raise HTTPException(status_code=400, detail="Destination is a directory")
+    root = vault_backend.vault_root().resolve()
+    rel_from = src.resolve().relative_to(root).as_posix()
+    if src.resolve() == dst.resolve():
+        return {
+            "ok": True,
+            "from": rel_from,
+            "to": rel_from,
+            "overwritten": False,
+            "companion_images": None,
+        }
+    overwritten = dst.is_file()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    rel_to = dst.resolve().relative_to(root).as_posix()
+    if notes_db.is_markdown_path(rel_to):
+        notes_db.on_note_written(rel_to)
+        vault_index.update_note(rel_to)
+        vault_index.rebuild_index()
+    vault_order.notify_copied(rel_to)
+    if vault_backend.backend_mode() == "s3":
+        vault_sync.enqueue_put(rel_to)
+        vault_sync.schedule_flush_pending()
+    else:
+        try:
+            vault_share.publish_vault_file_to_s3(rel_to)
+        except Exception:
+            pass
+    companion_images: str | None = None
+    if (
+        notes_db.is_markdown_path(rel_to)
+        and vault_companion_assets.parents_differ(rel_from, rel_to)
+    ):
+        if vault_companion_assets.schedule_copy_companion_images(rel_from, rel_to):
+            companion_images = "queued"
+    return {
+        "ok": True,
+        "from": rel_from,
+        "to": rel_to,
+        "overwritten": overwritten,
+        "companion_images": companion_images,
+    }
+
+
 @router.post("/delete")
 def delete_path(request: Request, body: DeleteBody) -> dict:
     require_user_id(request)
@@ -912,7 +983,7 @@ def compress_folder(request: Request, body: CompressBody) -> dict:
 
 @router.get("/compress/items")
 def compress_items(request: Request) -> dict:
-    """List compress jobs recorded in backup/{user}/compress.json."""
+    """List compress jobs recorded in {user}/backup/compress.json."""
     user_id = require_user_id(request)
     return vault_compress.list_items(user_id)
 
@@ -949,6 +1020,62 @@ def compress_status(request: Request) -> dict:
     """Poll background compress progress (file, count, percent, download URL)."""
     user_id = require_user_id(request)
     return vault_compress.get_status(user_id)
+
+
+@router.post("/clearing")
+def clearing_start(request: Request) -> dict:
+    """Start a background scan and return immediately so the UI can poll progress."""
+    require_user_id(request)
+    return vault_clearing.start_clearing_job()
+
+
+@router.get("/clearing")
+def clearing_status(request: Request) -> dict:
+    """Poll clearing progress. ``scan`` is present when status is ready."""
+    require_user_id(request)
+    return vault_clearing.get_clearing_status()
+
+
+@router.post("/clearing/keep")
+def clearing_keep(request: Request, body: ClearingPathsBody) -> dict:
+    """Remember media paths so later scans skip them."""
+    require_user_id(request)
+    if not body.paths:
+        raise HTTPException(status_code=400, detail="paths is required")
+    try:
+        kept = vault_clearing.remember_kept(body.paths)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "kept": kept}
+
+
+@router.post("/clearing/unkeep")
+def clearing_unkeep(request: Request, body: ClearingPathsBody) -> dict:
+    """Put kept media back into the next scan."""
+    require_user_id(request)
+    if not body.all and not body.paths:
+        raise HTTPException(status_code=400, detail="paths is required")
+    try:
+        kept = vault_clearing.forget_kept(body.paths, all_paths=body.all)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "kept": kept}
+
+
+@router.post("/clearing/delete")
+def clearing_delete(request: Request, body: ClearingPathsBody) -> dict:
+    """Start background deletion so the UI can poll progress."""
+    require_user_id(request)
+    if not body.paths:
+        raise HTTPException(status_code=400, detail="paths is required")
+    return vault_clearing.start_delete_job(body.paths)
+
+
+@router.get("/clearing/delete")
+def clearing_delete_status(request: Request) -> dict:
+    """Poll clearing delete progress (current file, count, percent)."""
+    require_user_id(request)
+    return vault_clearing.get_delete_status()
 
 
 @router.get("/sync")

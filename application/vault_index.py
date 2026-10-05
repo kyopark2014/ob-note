@@ -179,13 +179,20 @@ def _lookup_exact_path(raw: str) -> str | None:
     return None
 
 
+def _parent_key(path: str) -> str:
+    parent = str(Path(path).parent).replace("\\", "/")
+    if parent == ".":
+        parent = ""
+    return unicodedata.normalize("NFC", parent)
+
+
 def _prefer_same_folder(candidates: list[str], from_path: str | None) -> str | None:
     if not candidates:
         return None
     if len(candidates) == 1 or not from_path:
         return candidates[0]
-    from_parent = Path(from_path).parent
-    same = [p for p in candidates if Path(p).parent == from_parent]
+    from_parent = _parent_key(from_path)
+    same = [p for p in candidates if _parent_key(p) == from_parent]
     return same[0] if same else candidates[0]
 
 
@@ -230,8 +237,8 @@ def _resolve_prefix_match(key: str, *, from_path: str | None) -> str | None:
         return None
     # Prefer notes in the same folder as the source.
     if from_path:
-        from_parent = Path(from_path).parent
-        same = [p for p in hits if Path(p).parent == from_parent]
+        from_parent = _parent_key(from_path)
+        same = [p for p in hits if _parent_key(p) == from_parent]
         if same:
             hits = same
     if len(hits) == 1:
@@ -406,7 +413,7 @@ def resolve_link(name: str, *, from_path: str | None = None) -> str | None:
                 rel for rel in _index if _norm_key(Path(rel).stem) == basename_key
             ]
             same = _prefer_same_folder(stem_hits, from_path)
-            if same and Path(same).parent == Path(from_path).parent:
+            if same and _parent_key(same) == _parent_key(from_path):
                 return same
             if len(stem_hits) == 1:
                 return stem_hits[0]

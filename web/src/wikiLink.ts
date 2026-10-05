@@ -8,6 +8,20 @@ export function normWikiKey(name: string): string {
   return s.toLowerCase();
 }
 
+/** Obsidian wiki link for a vault markdown path. Folder paths keep a readable title. */
+export function wikiLinkMarkdown(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/^\/+/, "");
+  const base = normalized.split("/").pop() || normalized;
+  const stem = base.replace(/\.(md|markdown)$/i, "");
+  const target = normalized.replace(/\.(md|markdown)$/i, "");
+  const clean = (s: string) => s.replace(/[|\]]/g, "").trim();
+  const label = clean(stem);
+  const dest = clean(target);
+  if (!label) return "";
+  if (dest && dest !== label) return `[[${dest}|${label}]]`;
+  return `[[${label}]]`;
+}
+
 export function noteParentDir(path: string): string {
   const i = path.replace(/\\/g, "/").lastIndexOf("/");
   return i >= 0 ? path.slice(0, i) : "";
@@ -34,11 +48,15 @@ function pathKey(path: string): string {
   return normWikiKey(path.replace(/\\/g, "/"));
 }
 
+function parentKey(path: string): string {
+  return noteParentDir(path).normalize("NFC");
+}
+
 function preferSameFolder(hits: WikiFile[], fromPath?: string | null): WikiFile | null {
   if (!hits.length) return null;
   if (hits.length === 1 || !fromPath) return hits[0];
-  const parent = noteParentDir(fromPath);
-  const same = hits.filter((f) => noteParentDir(f.path) === parent);
+  const parent = parentKey(fromPath);
+  const same = hits.filter((f) => parentKey(f.path) === parent);
   return same[0] || hits[0];
 }
 
@@ -85,8 +103,8 @@ function resolvePrefixMatch(
   });
   if (!hits.length) return null;
   if (fromPath) {
-    const parent = noteParentDir(fromPath);
-    const same = hits.filter((f) => noteParentDir(f.path) === parent);
+    const parent = parentKey(fromPath);
+    const same = hits.filter((f) => parentKey(f.path) === parent);
     if (same.length) hits = same;
   }
   if (hits.length === 1) return hits[0].path;
@@ -154,8 +172,8 @@ export function resolveWikiTarget(
   const stemHits = mdFiles.filter((f) => normWikiKey(f.name) === basename);
   if (stemHits.length) {
     if (fromPath) {
-      const parent = noteParentDir(fromPath);
-      const sameFolder = stemHits.filter((f) => noteParentDir(f.path) === parent);
+      const parent = parentKey(fromPath);
+      const sameFolder = stemHits.filter((f) => parentKey(f.path) === parent);
       if (sameFolder.length) return sameFolder[0].path;
     }
     if (stemHits.length === 1 || !needle.includes("/")) {

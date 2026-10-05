@@ -23,6 +23,8 @@ from application import app_data_backend, vault_backend
 
 logger = logging.getLogger("vault_compress")
 
+FOLDER_KEEP_NAMES = {".keep", ".gitkeep"}
+SKIP_DIR_NAMES = {".git", ".vault"}
 MAX_COMPRESS_BYTES = 2 * 1024 * 1024 * 1024
 MAX_COMPRESS_FILES = 20_000
 COMPRESS_URL_EXPIRES = 3600
@@ -57,8 +59,8 @@ def _progress(
     }
 
 
-def _public_job(job: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _public_job(job: dict[str, Any], *, already_running: bool = False) -> dict[str, Any]:
+    payload = {
         "ok": True,
         "job_id": job.get("job_id"),
         "status": job.get("status") or "idle",
@@ -71,7 +73,16 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
         "url": job.get("url"),
         "expires_in": job.get("expires_in"),
         "progress": job.get("progress"),
+        "already_running": already_running,
     }
+    return payload
+
+
+def _running_job(user_id: str) -> dict[str, Any] | None:
+    current = _jobs.get(user_id)
+    if current and current.get("status") in {"queued", "running"}:
+        return current
+    return None
 
 
 def get_status(user_id: str) -> dict[str, Any]:
@@ -191,12 +202,12 @@ def _attachment_disposition(filename: str) -> str:
 
 
 def _backup_destination(segment: str, zip_name: str) -> tuple[Path, bool]:
-    """``/mnt/app-data/backup/{user}/{folder}.zip`` when S3 Files is mounted."""
-    mounted_dir = Path(app_data_backend.mount_dir()) / "backup" / segment
+    """``/mnt/app-data/{user}/backup/{folder}.zip`` when S3 Files is mounted."""
+    mounted_dir = Path(app_data_backend.mount_dir()) / segment / "backup"
     if app_data_backend.mount_available():
         mounted_dir.mkdir(parents=True, exist_ok=True)
         return mounted_dir / zip_name, True
-    local_dir = Path(__file__).resolve().parents[1] / "data" / "backup" / segment
+    local_dir = Path(__file__).resolve().parents[1] / "data" / segment / "backup"
     local_dir.mkdir(parents=True, exist_ok=True)
     return local_dir / zip_name, False
 
@@ -205,21 +216,21 @@ def _s3_backup_key(segment: str, zip_name: str) -> str:
     prefix = app_data_backend.S3_FILES_PREFIX
     if prefix and not prefix.endswith("/"):
         prefix += "/"
-    return f"{prefix}backup/{segment}/{zip_name}"
+    return f"{prefix}{segment}/backup/{zip_name}"
 
 
 def _backup_dir(segment: str) -> Path:
-    mounted_dir = Path(app_data_backend.mount_dir()) / "backup" / segment
+    mounted_dir = Path(app_data_backend.mount_dir()) / segment / "backup"
     if app_data_backend.mount_available():
         mounted_dir.mkdir(parents=True, exist_ok=True)
         return mounted_dir
-    local_dir = Path(__file__).resolve().parents[1] / "data" / "backup" / segment
+    local_dir = Path(__file__).resolve().parents[1] / "data" / segment / "backup"
     local_dir.mkdir(parents=True, exist_ok=True)
     return local_dir
 
 
 def _catalog_file(segment: str) -> Path:
-    """Status file next to the zip archives: ``.../backup/{user}/compress.json``."""
+    """Status file next to the zip archives: ``.../{user}/backup/compress.json``."""
     return _backup_dir(segment) / CATALOG_NAME
 
 
@@ -581,7 +592,11 @@ def _collect_entries(src: Path) -> list[tuple[Path | None, str]]:
     file_count = 0
     total = 0
     for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name not in {".git", ".vault"}]
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in SKIP_DIR_NAMES and name not in FOLDER_KEEP_NAMES
+        ]
         current = Path(dirpath)
         try:
             current_resolved = current.resolve()
@@ -590,10 +605,14 @@ def _collect_entries(src: Path) -> list[tuple[Path | None, str]]:
         if root != current_resolved and root not in current_resolved.parents:
             continue
         rel_dir = current_resolved.relative_to(root).as_posix()
-        if not filenames and not dirnames:
+        visible = [name for name in filenames if name not in FOLDER_KEEP_NAMES]
+        # A folder that exists only to hold .keep / .gitkeep is a placeholder.
+        # Leave it out of the archive. A truly empty folder is still included.
+        keep_only = bool(filenames) and not visible and not dirnames
+        if not visible and not dirnames and not keep_only:
             arc_dir = folder_name if rel_dir == "." else f"{folder_name}/{rel_dir}"
             entries.append((None, arc_dir.rstrip("/") + "/"))
-        for name in filenames:
+        for name in visible:
             path = current / name
             try:
                 resolved = path.resolve()
@@ -823,8 +842,16 @@ def start_compress(user_id: str, rel: str = "", *, entire_vault: bool = False) -
     """Validate the folder, then zip it on a background thread.
 
     ``entire_vault`` zips ``/mnt/app-data/{user}/vault/`` (or the live vault
-    copy) and skips the ``.vault`` settings folder.
+    copy) and skips the ``.vault`` settings folder. One job per user: a second
+    request while a zip is queued or running is rejected.
     """
+    with _lock:
+        current = _running_job(user_id)
+        if current:
+            payload = _public_job(current, already_running=True)
+            payload["message"] = "이미 압축이 진행 중입니다."
+            return payload
+
     segment = vault_backend.user_segment(user_id)
     if entire_vault:
         src = resolve_entire_vault()
@@ -852,9 +879,11 @@ def start_compress(user_id: str, rel: str = "", *, entire_vault: bool = False) -
 
     created_at = int(_now())
     with _lock:
-        current = _jobs.get(user_id)
-        if current and current.get("status") in {"queued", "running"}:
-            return _public_job(current)
+        current = _running_job(user_id)
+        if current:
+            payload = _public_job(current, already_running=True)
+            payload["message"] = "이미 압축이 진행 중입니다."
+            return payload
         job = {
             "job_id": job_id,
             "segment": segment,

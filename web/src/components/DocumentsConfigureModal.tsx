@@ -151,7 +151,7 @@ export function DocumentsConfigureModal({ onClose, onFileUploaded }: Props) {
             type="file"
             multiple
             className="documents-configure-file-input"
-            accept=".pdf,.md,.txt,.markdown,.rst,.docx,.pptx,.csv,.json,.html,.htm,application/pdf,text/plain,text/markdown"
+            accept=".pdf,.md,.txt,.markdown,.rst,.doc,.docx,.dotx,.ppt,.pptx,.potx,.xls,.xlsx,.xlsm,.csv,.tsv,.html,.htm,.json,application/pdf,text/plain,text/markdown"
             disabled={busy}
             onChange={(e) => {
               void handlePickFile(e.target.files, kind);
@@ -180,8 +180,8 @@ export function DocumentsConfigureModal({ onClose, onFileUploaded }: Props) {
             </ul>
           ) : (
             <p className="documents-configure-docs-empty">
-              파일을 선택하면 저장 후 Sync를 수행합니다. (Ctrl/Cmd 또는 Shift로
-              여러 파일 선택 가능)
+              PDF, Word, PowerPoint, Excel, CSV, HTML, JSON, 텍스트를 선택할 수
+              있습니다. 선택하면 업로드 후 Sync로 Markdown을 추출합니다.
             </p>
           )}
         </div>

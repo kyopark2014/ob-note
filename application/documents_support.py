@@ -1416,7 +1416,31 @@ def delete_documents_document(
         if raw:
             paths_to_delete.append(raw)
 
-    for sibling in (f"{stem}.pdf", f"{stem}.md", f"{stem}.json", name):
+    for sibling in (
+        f"{stem}.pdf",
+        f"{stem}.md",
+        f"{stem}.json",
+        f"{stem}.docmeta.json",
+        f"{stem}.doc",
+        f"{stem}.docx",
+        f"{stem}.dotx",
+        f"{stem}.ppt",
+        f"{stem}.pptx",
+        f"{stem}.potx",
+        f"{stem}.xls",
+        f"{stem}.xlsx",
+        f"{stem}.xlsm",
+        f"{stem}.xltx",
+        f"{stem}.csv",
+        f"{stem}.tsv",
+        f"{stem}.html",
+        f"{stem}.htm",
+        f"{stem}.txt",
+        f"{stem}.text",
+        f"{stem}.rst",
+        f"{stem}.markdown",
+        name,
+    ):
         paths_to_delete.append(os.path.join(docs_dir, sibling))
     md_file = str(entry.get("md_file") or "").strip()
     if md_file:

@@ -153,6 +153,24 @@ def notify_renamed(from_path: str, to_path: str) -> None:
             _save(folders)
 
 
+def notify_copied(to_path: str) -> None:
+    """Append a copied file into the destination folder's custom order."""
+    to_path = to_path.replace("\\", "/").strip("/")
+    if not to_path:
+        return
+    parent = str(Path(to_path).parent).replace("\\", "/")
+    if parent == ".":
+        parent = ""
+    name = Path(to_path).name
+    with _lock:
+        folders = _load()
+        dst_names = folders.get(parent)
+        if dst_names is None or name in dst_names:
+            return
+        folders[parent] = [*dst_names, name]
+        _save(folders)
+
+
 def notify_deleted(path: str) -> None:
     """Remove a path from order maps when deleted."""
     path = path.replace("\\", "/").strip("/")

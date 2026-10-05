@@ -66,6 +66,62 @@ export type CompressJobStatus = {
     pct?: number | null;
     phase?: string | null;
   } | null;
+  already_running?: boolean;
+};
+
+export type ClearingItem = {
+  path: string;
+  name: string;
+  folder: string;
+  size: number;
+  mtime: number;
+  suffix: string;
+};
+
+export type ClearingScan = {
+  ok: boolean;
+  media_count: number;
+  referenced_count: number;
+  kept_count: number;
+  kept_paths: string[];
+  items: ClearingItem[];
+};
+
+export type ClearingDeleteStatus = {
+  ok: boolean;
+  job_id?: string | null;
+  status: "idle" | "queued" | "running" | "ready" | "error" | string;
+  busy?: boolean;
+  message?: string | null;
+  error?: string | null;
+  updated_at?: number;
+  deleted?: string[];
+  errors?: { path: string; error: string }[];
+  progress?: {
+    file?: string | null;
+    file_i?: number | null;
+    file_n?: number | null;
+    pct?: number | null;
+    phase?: string | null;
+  } | null;
+};
+
+export type ClearingJobStatus = {
+  ok: boolean;
+  job_id?: string | null;
+  status: "idle" | "queued" | "running" | "ready" | "error" | string;
+  busy?: boolean;
+  message?: string | null;
+  error?: string | null;
+  updated_at?: number;
+  progress?: {
+    file?: string | null;
+    file_i?: number | null;
+    file_n?: number | null;
+    pct?: number | null;
+    phase?: string | null;
+  } | null;
+  scan?: ClearingScan | null;
 };
 
 export type CompressListItem = {
@@ -209,6 +265,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ from_path, to_path }),
     }),
+  copyFile: (from_path: string, to_path: string) =>
+    request<{
+      ok: boolean;
+      from: string;
+      to: string;
+      overwritten?: boolean;
+      companion_images?: "queued" | null;
+    }>("/files/copy", {
+      method: "POST",
+      body: JSON.stringify({ from_path, to_path }),
+    }),
   reorderFolder: (folder: string, names: string[]) =>
     request<{ ok: boolean; folder: string; names: string[] }>("/files/order", {
       method: "PUT",
@@ -243,6 +310,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ id }),
     }),
+  startClearing: () =>
+    request<ClearingJobStatus>("/files/clearing", { method: "POST" }),
+  getClearingStatus: () => request<ClearingJobStatus>("/files/clearing"),
+  keepClearing: (paths: string[]) =>
+    request<{ ok: boolean; kept: string[] }>("/files/clearing/keep", {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+    }),
+  unkeepClearing: (paths: string[] = [], all = false) =>
+    request<{ ok: boolean; kept: string[] }>("/files/clearing/unkeep", {
+      method: "POST",
+      body: JSON.stringify({ paths, all }),
+    }),
+  startClearingDelete: (paths: string[]) =>
+    request<ClearingDeleteStatus>("/files/clearing/delete", {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+    }),
+  getClearingDeleteStatus: () =>
+    request<ClearingDeleteStatus>("/files/clearing/delete"),
   createShare: (path: string) =>
     request<{
       ok: boolean;
