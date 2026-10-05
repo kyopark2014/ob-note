@@ -466,7 +466,9 @@ export function MarkdownPreview({ content, notePath, onWikiClick }: Props) {
   return (
     <div className="preview-pane" ref={paneRef}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        // 6F~12F, 2~2.5처럼 범위에 쓰는 단일 ~ 는 그대로 둔다.
+        // 취소선은 ~~텍스트~~ 만 적용한다.
+        remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
         urlTransform={(url) => {
           if (url.includes(WIKI_HASH_PREFIX) || url.startsWith("wiki:")) return url;
           return defaultUrlTransform(url);

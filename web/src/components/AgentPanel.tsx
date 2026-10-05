@@ -11,6 +11,10 @@ import {
 import { RefreshIcon } from "./Icons";
 import { ToolCallCard } from "./ToolCallCard";
 
+// 6F~12F, 2~2.5처럼 범위에 쓰는 단일 ~ 는 그대로 둔다.
+// 취소선은 ~~텍스트~~ 만 적용한다.
+const gfmRemarkPlugins = [[remarkGfm, { singleTilde: false }]];
+
 export type AgentMessage = {
   id: string;
   role: "user" | "assistant";
@@ -221,7 +225,7 @@ function MessageTimeline({
           if (!text.trim()) return null;
           return (
             <div key={`text-${index}`} className="agent-message-bubble">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={gfmRemarkPlugins}>{text}</ReactMarkdown>
             </div>
           );
         }
@@ -234,12 +238,12 @@ function MessageTimeline({
       })}
       {liveText ? (
         <div className="agent-message-bubble">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{liveText}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={gfmRemarkPlugins}>{liveText}</ReactMarkdown>
         </div>
       ) : null}
       {showTrailingContent ? (
         <div className="agent-message-bubble">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content!}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={gfmRemarkPlugins}>{content!}</ReactMarkdown>
         </div>
       ) : null}
       {showThinking ? (
@@ -606,7 +610,7 @@ export function AgentPanel({
               ) : (
                 <div className="agent-message-bubble">
                   {m.role === "assistant" ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={gfmRemarkPlugins}>{m.content}</ReactMarkdown>
                   ) : (
                     m.content
                   )}
