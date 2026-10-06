@@ -32,6 +32,8 @@ import {
   ArchiveIcon,
   ClearingIcon,
   AgentIcon,
+  ExpandIcon,
+  CollapseIcon,
   BookIcon,
   DocumentsIcon,
   EditIcon,
@@ -606,6 +608,8 @@ export default function App() {
   const [file, setFile] = useState<FilePayload | null>(null);
   const [draft, setDraft] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("preview");
+  const [noteFullscreen, setNoteFullscreen] = useState(false);
+  const [fullscreenChrome, setFullscreenChrome] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [searchQ, setSearchQ] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
@@ -732,6 +736,11 @@ export default function App() {
   const renamedFromRef = useRef(new Map<string, string>());
   const draftRef = useRef(draft);
   const activePathRef = useRef(activePath);
+  const tabsRef = useRef(tabs);
+  /** Bumps on each open so a slower read cannot overwrite a newer tab switch. */
+  const openSeqRef = useRef(0);
+  /** Tab path already requested while openFile is still reading. */
+  const tabNavTargetRef = useRef<string | null>(null);
   const treeRef = useRef(tree);
   const didRestoreNote = useRef(false);
   const loginSyncUserRef = useRef<string | null>(null);
@@ -742,6 +751,7 @@ export default function App() {
   const clearingOpenedRef = useRef<string | null>(null);
   draftRef.current = draft;
   activePathRef.current = activePath;
+  tabsRef.current = tabs;
   treeRef.current = tree;
 
   const updatePinnedPaths = useCallback((next: string[]) => {
@@ -1238,6 +1248,8 @@ export default function App() {
 
   const openFile = useCallback(
     async (path: string): Promise<boolean> => {
+      const seq = ++openSeqRef.current;
+      const stale = () => seq !== openSeqRef.current;
       const isMd = /\.md$/i.test(path);
       const isImage = isImageFileName(path);
       const isVideo = isVideoFileName(path);
@@ -1253,18 +1265,22 @@ export default function App() {
       ) {
         try {
           const { finalPath } = await persistNote(currentPath, draftRef.current);
+          if (stale()) return false;
           if (finalPath !== currentPath) {
             setActivePath(finalPath);
             writeLastNotePath(finalPath);
             syncDeepLinkNotePath(finalPath);
           }
         } catch (err) {
+          if (tabNavTargetRef.current === path) tabNavTargetRef.current = null;
           void showAlert(err instanceof Error ? err.message : String(err), "Save failed");
           return false;
         }
       }
 
       if (isImage || isVideo) {
+        if (stale()) return false;
+        if (tabNavTargetRef.current === path) tabNavTargetRef.current = null;
         setFile(null);
         setDraft("");
         setDirty(false);
@@ -1292,7 +1308,9 @@ export default function App() {
       let payload;
       try {
         payload = await api.readFile(path);
+        if (stale()) return false;
       } catch (err) {
+        if (stale()) return false;
         const status = (err as { status?: number; detail?: unknown } | null)?.status;
         if (status === 404) {
           const body = (err as { detail?: unknown }).detail;
@@ -1307,6 +1325,7 @@ export default function App() {
                 (inner as { purged?: unknown }).purged,
             );
           await refreshTree();
+          if (stale()) return false;
           // Only drop tabs/pins when backend confirmed the note is gone (not a
           // transient S3 download miss while the object still exists remotely).
           if (purged) {
@@ -1325,12 +1344,17 @@ export default function App() {
               "Open failed",
             );
           }
+          if (tabNavTargetRef.current === path) tabNavTargetRef.current = null;
           return false;
         }
+        if (tabNavTargetRef.current === path) tabNavTargetRef.current = null;
         void showAlert(err instanceof Error ? err.message : String(err), "Open failed");
         return false;
       }
       const resolvedPath = payload.path || path;
+      if (tabNavTargetRef.current === path || tabNavTargetRef.current === resolvedPath) {
+        tabNavTargetRef.current = null;
+      }
       setFile(payload);
       setDraft(payload.content);
       setDirty(false);
@@ -1510,6 +1534,96 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [save]);
+
+  const exitNoteFullscreen = useCallback(() => {
+    setNoteFullscreen(false);
+    setFullscreenChrome(false);
+  }, []);
+
+  useEffect(() => {
+    if (!noteFullscreen) return;
+    if (!activePath || !/\.md$/i.test(activePath)) exitNoteFullscreen();
+  }, [activePath, exitNoteFullscreen, noteFullscreen]);
+
+  useEffect(() => {
+    if (!noteFullscreen) return;
+    // One mouse-wheel notch. Key repeat then keeps scrolling the note.
+    const WHEEL_STEP_PX = 96;
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+      if (
+        document.querySelector(
+          ".modal-backdrop, [role='dialog'], .ctx-menu, .config-popover",
+        )
+      ) {
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        exitNoteFullscreen();
+        return;
+      }
+      if (e.shiftKey || (e.key !== "ArrowDown" && e.key !== "ArrowUp")) return;
+      const scroller = document.querySelector(".app.note-fullscreen .main .content");
+      if (!(scroller instanceof HTMLElement)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      scroller.scrollBy({
+        top: e.key === "ArrowDown" ? WHEEL_STEP_PX : -WHEEL_STEP_PX,
+        behavior: "auto",
+      });
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [exitNoteFullscreen, noteFullscreen]);
+
+  useEffect(() => {
+    if (!activePath || noteFullscreen) return;
+    document
+      .querySelector(".tabs .tab.active")
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activePath, noteFullscreen]);
+
+  useEffect(() => {
+    function keepHorizontalCaret(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.closest(".agent-panel, .sidebar, .modal-card, .config-popover")) return true;
+      const field = target.closest("input, textarea, select");
+      if (!field) return false;
+      if (noteFullscreen && field.closest(".main .content")) return false;
+      return true;
+    }
+
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.isComposing) return;
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (
+        document.querySelector(
+          ".modal-backdrop, [role='dialog'], .ctx-menu, .config-popover",
+        )
+      ) {
+        return;
+      }
+      if (keepHorizontalCaret(e.target)) return;
+      const list = tabsRef.current;
+      if (list.length < 2) return;
+      const pending = tabNavTargetRef.current;
+      const current =
+        pending && list.some((t) => t.path === pending) ? pending : activePathRef.current;
+      const idx = list.findIndex((t) => t.path === current);
+      if (idx < 0) return;
+      const nextIdx = idx + (e.key === "ArrowRight" ? 1 : -1);
+      e.preventDefault();
+      e.stopPropagation();
+      if (nextIdx < 0 || nextIdx >= list.length) return;
+      const nextPath = list[nextIdx].path;
+      tabNavTargetRef.current = nextPath;
+      void openFile(nextPath);
+    }
+
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [noteFullscreen, openFile]);
 
   useEffect(() => {
     if (panel !== "search") return;
@@ -2974,7 +3088,7 @@ export default function App() {
 
   return (
     <div
-      className={`app${panel === "hidden" ? " sidebar-collapsed" : " panel-open"}${isNarrow ? " is-narrow" : ""}${agentOpen ? " agent-open" : ""}${sidebarResizing || agentResizing ? " is-resizing" : ""}`}
+      className={`app${panel === "hidden" ? " sidebar-collapsed" : " panel-open"}${isNarrow ? " is-narrow" : ""}${agentOpen ? " agent-open" : ""}${sidebarResizing || agentResizing ? " is-resizing" : ""}${noteFullscreen ? " note-fullscreen" : ""}${noteFullscreen && fullscreenChrome ? " fullscreen-chrome" : ""}`}
       style={{
         ["--sidebar-w" as string]: `${sidebarWidth}px`,
         ["--agent-w" as string]: `${agentWidth}px`,
@@ -3748,6 +3862,24 @@ export default function App() {
                     <button
                       type="button"
                       className="icon-btn"
+                      data-tooltip={noteFullscreen ? "Exit fullscreen" : "Full Screen"}
+                      aria-label={noteFullscreen ? "Exit fullscreen" : "Full Screen"}
+                      aria-pressed={noteFullscreen}
+                      onClick={() => {
+                        if (noteFullscreen) {
+                          exitNoteFullscreen();
+                          return;
+                        }
+                        setFullscreenChrome(false);
+                        setNoteFullscreen(true);
+                      }}
+                      style={{ color: noteFullscreen ? "var(--accent)" : undefined }}
+                    >
+                      {noteFullscreen ? <CollapseIcon /> : <ExpandIcon />}
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
                       data-tooltip="Preview"
                       aria-label="Preview"
                       onClick={() => setViewMode("preview")}
@@ -3786,6 +3918,28 @@ export default function App() {
                 </div>
                 <div
                   className="content"
+                  onClick={(e) => {
+                    if (!noteFullscreen) return;
+                    const raw = e.target;
+                    const target =
+                      raw instanceof HTMLElement
+                        ? raw
+                        : raw instanceof Node
+                          ? raw.parentElement
+                          : null;
+                    if (!target) return;
+                    if (target.closest("a, button, input, textarea, video, select, summary, .toolbar")) {
+                      return;
+                    }
+                    const onBackground =
+                      target.classList.contains("content") ||
+                      target.classList.contains("editor-pane") ||
+                      target.classList.contains("preview-pane") ||
+                      target.classList.contains("preview-editor") ||
+                      target.classList.contains("ProseMirror");
+                    if (!onBackground) return;
+                    setFullscreenChrome((visible) => !visible);
+                  }}
                   onDragOver={(e) => {
                     if (!hasExternalFileDrag(e)) return;
                     e.preventDefault();

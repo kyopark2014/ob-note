@@ -3647,3 +3647,35 @@ html[data-theme="light"] .agent-loaded-file-remove:hover:not(:disabled) {
   font-size: 13px;
   line-height: 1.45;
 }
+
+/* Note reading fullscreen: hide app chrome until a click on the empty background reveals the toolbar. */
+.app.note-fullscreen,
+.app.note-fullscreen.agent-open,
+.app.note-fullscreen.sidebar-collapsed,
+.app.note-fullscreen.sidebar-collapsed.agent-open,
+.app.note-fullscreen.is-narrow,
+.app.note-fullscreen.is-narrow.agent-open,
+.app.note-fullscreen.is-narrow.panel-open,
+.app.note-fullscreen.is-narrow.sidebar-collapsed.agent-open {
+  grid-template-columns: 1fr !important;
+}
+
+.app.note-fullscreen .rail,
+.app.note-fullscreen .sidebar,
+.app.note-fullscreen .agent-panel,
+.app.note-fullscreen .tabs,
+.app.note-fullscreen .status-bar {
+  display: none !important;
+}
+
+.app.note-fullscreen .main {
+  grid-column: 1 !important;
+}
+
+.app.note-fullscreen:not(.fullscreen-chrome) .toolbar {
+  display: none;
+}
+
+.app.note-fullscreen.fullscreen-chrome .toolbar {
+  background: var(--bg);
+}
