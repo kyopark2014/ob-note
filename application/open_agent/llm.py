@@ -46,6 +46,21 @@ def _max_tokens(model_type: str, model_id: str) -> int:
     return 5120
 
 
+def _rejects_temperature(model_id: str) -> bool:
+    """Claude 5 / Fable reject sampling params on Bedrock.
+
+    InvokeModel returns ValidationException: "`temperature` is deprecated for this model."
+    """
+    mid = (model_id or "").lower()
+    return (
+        "fable" in mid
+        or "claude-sonnet-5" in mid
+        or "claude-5-sonnet" in mid
+        or "claude-opus-5" in mid
+        or "claude-5-opus" in mid
+    )
+
+
 def get_chat_model(model_name: Optional[str] = None) -> Any:
     """Return a LangChain chat model for the UI display name."""
     profile = model_catalog.get_model_profile(model_name)
@@ -60,6 +75,10 @@ def get_chat_model(model_name: Optional[str] = None) -> Any:
         config=Config(retries={"max_attempts": 8}, read_timeout=300),
     )
 
+    sampling: dict[str, Any] = (
+        {} if _rejects_temperature(model_id) else {"temperature": 0.2}
+    )
+
     # OpenAI / Kimi Mantle paths: Converse with api-format when available.
     api_format = profile.get("mantle_api") or profile.get("apiFormat")
     if model_type in ("openai", "kimi") or api_format:
@@ -67,8 +86,8 @@ def get_chat_model(model_name: Optional[str] = None) -> Any:
             "model_id": model_id,
             "client": client,
             "max_tokens": max_tokens,
-            "temperature": 0.2,
             "region_name": region,
+            **sampling,
         }
         if model_type == "claude":
             kwargs["provider"] = "anthropic"
@@ -88,7 +107,7 @@ def get_chat_model(model_name: Optional[str] = None) -> Any:
         "client": client,
         "model_kwargs": {
             "max_tokens": max_tokens,
-            "temperature": 0.2,
+            **sampling,
             **({"stop_sequences": [stop]} if stop else {}),
         },
         "region_name": region,
