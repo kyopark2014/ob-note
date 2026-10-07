@@ -503,6 +503,7 @@ async def upload_file(
 ) -> dict:
     """Save a binary file (e.g. pasted image) into the vault."""
     require_user_id(request)
+    path = vault_backend._nfc_rel(path)
     try:
         target = vault_backend.resolve_vault_path(path)
     except ValueError as e:
@@ -528,6 +529,10 @@ async def upload_file(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
+    retired = vault_backend.retire_nfd_duplicate(path)
+    if retired and vault_backend.backend_mode() == "s3":
+        vault_sync.enqueue_delete(retired)
+        vault_sync.schedule_flush_pending()
     note_row = None
     if notes_db.is_markdown_path(path):
         try:
@@ -606,7 +611,7 @@ def _retitle_rel(src_rel: str, content: str) -> str:
 @router.put("/write")
 def write_file(request: Request, body: WriteBody) -> dict:
     require_user_id(request)
-    src_rel = body.path.replace("\\", "/").strip("/")
+    src_rel = vault_backend._nfc_rel(body.path)
     try:
         src_target = vault_backend.resolve_vault_path(src_rel)
     except ValueError as e:
@@ -620,6 +625,11 @@ def write_file(request: Request, body: WriteBody) -> dict:
         raise HTTPException(status_code=400, detail=str(e)) from e
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
+    for rel in {src_rel, final_rel}:
+        retired = vault_backend.retire_nfd_duplicate(rel)
+        if retired and vault_backend.backend_mode() == "s3":
+            vault_sync.enqueue_delete(retired)
+            vault_sync.schedule_flush_pending()
 
     renamed_from: str | None = None
     if final_rel != src_rel:

@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 import traceback
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,24 @@ import boto3
 from application import utils as app_utils
 
 logger = logging.getLogger("documents_support")
+
+
+def nfc_text(value: str | None) -> str:
+    """Compose Hangul so an NFD upload and an NFC lookup share one spelling."""
+    return unicodedata.normalize("NFC", value or "")
+
+
+def nfc_filename(filename: str | None, *, default: str = "") -> str:
+    """Return a basename in NFC.
+
+    macOS file pickers send decomposed Hangul (NFD). Linux paths and the
+    agent look up composed Hangul (NFC), so store and address one spelling.
+    """
+    name = nfc_text(os.path.basename(filename or "").strip())
+    name = name.replace("\x00", "")
+    if name in {".", ".."}:
+        return default
+    return name or default
 
 _ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_DATA = _ROOT / "data"
@@ -343,8 +362,7 @@ def documents_drawings_list_path(user_id: str | None = None) -> str:
 
 def _documents_docs_dest_path(docs_dir: str, filename: str) -> tuple[str, str, str]:
     """Return ``(dest_path, sanitized_name, original_basename)``."""
-    original = os.path.basename((filename or "").strip()) or "upload.bin"
-    original = original.replace("\x00", "_") or "upload.bin"
+    original = nfc_filename(filename, default="upload.bin").replace("\x00", "_") or "upload.bin"
     try:
         _ensure_documents_on_path()
         from doc_list import sanitize_documents_filename
@@ -605,7 +623,7 @@ def _session_upload_content_type(file_name: str) -> str:
 def documents_projects_s3_key(file_name: str, user_id: str | None = None) -> str:
     """Build ``{user}/documents/projects/{file}`` staging key."""
     segment = sanitize_user_path_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    safe_name = nfc_filename(file_name, default="upload.bin")
     return f"{segment}/documents/projects/{safe_name}"
 
 
@@ -619,7 +637,7 @@ def generate_documents_projects_presigned_put(
         logger.error("s3_bucket is not configured")
         return None
 
-    original = os.path.basename(file_name or "").strip() or "upload.bin"
+    original = nfc_filename(file_name, default="upload.bin")
     try:
         _ensure_documents_on_path()
         from doc_list import sanitize_documents_filename
@@ -676,17 +694,14 @@ def materialize_documents_projects_from_s3(
     if not _s3_bucket() or not s3_key:
         return None
 
-    original = (
-        os.path.basename(original_filename or file_name or "").strip()
-        or "upload.bin"
-    )
+    original = nfc_filename(original_filename or file_name, default="upload.bin")
     try:
         _ensure_documents_on_path()
         from doc_list import PROJECTS, sanitize_documents_filename, upsert_document
 
         safe_name = sanitize_documents_filename(file_name or original)
     except Exception:
-        safe_name = os.path.basename(file_name or original) or "upload.bin"
+        safe_name = nfc_filename(file_name or original, default="upload.bin")
         upsert_document = None  # type: ignore[assignment]
         PROJECTS = None  # type: ignore[assignment]
 
@@ -754,7 +769,7 @@ def materialize_documents_projects_from_s3(
 
 def documents_drawings_s3_key(file_name: str, user_id: str | None = None) -> str:
     segment = sanitize_user_path_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "upload.bin"
+    safe_name = nfc_filename(file_name, default="upload.bin")
     return f"{segment}/documents/drawings/{safe_name}"
 
 
@@ -768,7 +783,7 @@ def generate_documents_drawings_presigned_put(
         logger.error("s3_bucket is not configured")
         return None
 
-    original = os.path.basename(file_name or "").strip() or "upload.bin"
+    original = nfc_filename(file_name, default="upload.bin")
     try:
         _ensure_documents_on_path()
         from doc_list import sanitize_documents_filename
@@ -825,17 +840,14 @@ def materialize_documents_drawings_from_s3(
     if not _s3_bucket() or not s3_key:
         return None
 
-    original = (
-        os.path.basename(original_filename or file_name or "").strip()
-        or "upload.bin"
-    )
+    original = nfc_filename(original_filename or file_name, default="upload.bin")
     try:
         _ensure_documents_on_path()
         from doc_list import DRAWINGS, sanitize_documents_filename, upsert_document
 
         safe_name = sanitize_documents_filename(file_name or original)
     except Exception:
-        safe_name = os.path.basename(file_name or original) or "upload.bin"
+        safe_name = nfc_filename(file_name or original, default="upload.bin")
         upsert_document = None  # type: ignore[assignment]
         DRAWINGS = None  # type: ignore[assignment]
 
@@ -906,7 +918,7 @@ def documents_project_pdf_public_url(
 ) -> str | None:
     if not _sharing_url():
         return None
-    safe_name = os.path.basename(file_name or "").strip()
+    safe_name = nfc_filename(file_name)
     if not safe_name:
         return None
     segment = sanitize_user_path_segment(user_id) or "default"
@@ -922,7 +934,7 @@ def documents_drawing_pdf_public_url(
 ) -> str | None:
     if not _sharing_url():
         return None
-    safe_name = os.path.basename(file_name or "").strip()
+    safe_name = nfc_filename(file_name)
     if not safe_name:
         return None
     segment = sanitize_user_path_segment(user_id) or "default"
@@ -935,7 +947,7 @@ def documents_drawing_pdf_public_url(
 
 def documents_md_artifacts_s3_key(file_name: str, user_id: str | None = None) -> str:
     segment = sanitize_user_path_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    safe_name = nfc_filename(file_name, default="document.md")
     if not safe_name.lower().endswith(".md"):
         safe_name = f"{os.path.splitext(safe_name)[0]}.md"
     project = (_project_name() or "default").strip().strip("/") or "default"
@@ -946,7 +958,7 @@ def documents_md_runtime_workspace_s3_key(
     file_name: str, user_id: str | None = None
 ) -> str:
     segment = sanitize_user_path_segment(user_id) or "default"
-    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    safe_name = nfc_filename(file_name, default="document.md")
     if not safe_name.lower().endswith(".md"):
         safe_name = f"{os.path.splitext(safe_name)[0]}.md"
     return f"{S3_FILES_SESSION_PREFIX}/{segment}/artifacts/md/{safe_name}"
@@ -968,7 +980,7 @@ def documents_md_local_artifacts_path(
     artifacts = ensure_user_artifacts_dir(user_id)
     md_dir = os.path.join(artifacts, "md")
     os.makedirs(md_dir, exist_ok=True)
-    safe_name = os.path.basename(file_name or "").strip() or "document.md"
+    safe_name = nfc_filename(file_name, default="document.md")
     if not safe_name.lower().endswith(".md"):
         safe_name = f"{os.path.splitext(safe_name)[0]}.md"
     return os.path.join(md_dir, safe_name)
@@ -1002,7 +1014,7 @@ def publish_documents_markdown_to_artifacts(
         logger.warning("Documents md publish skipped; missing file: %s", src)
         return None
 
-    name = os.path.basename(file_name or src.name)
+    name = nfc_filename(file_name or src.name, default="document.md")
     if not name.lower().endswith(".md"):
         name = f"{os.path.splitext(name)[0]}.md"
 
@@ -1122,7 +1134,7 @@ def documents_pdf_s3_key_for_kind(
     *,
     kind: str = "project",
 ) -> str | None:
-    safe_name = os.path.basename(file_name or "").strip()
+    safe_name = nfc_filename(file_name)
     if not safe_name:
         return None
     if kind == "drawing":
@@ -1155,7 +1167,7 @@ def stream_documents_pdf_from_s3(
     key = documents_pdf_s3_key_for_kind(file_name, user_id=user_id, kind=kind)
     if not _s3_bucket() or not key:
         return None
-    safe_name = os.path.basename(file_name or "").strip() or "document.pdf"
+    safe_name = nfc_filename(file_name, default="document.pdf")
     try:
         s3_client = boto3.client(service_name="s3", region_name=_s3_region())
         obj = s3_client.get_object(Bucket=_s3_bucket(), Key=key)
@@ -1365,7 +1377,7 @@ def delete_documents_document(
     import shutil
     from pathlib import Path as _Path
 
-    name = os.path.basename(filename or "").strip()
+    name = nfc_filename(filename)
     if not name or name in {".", ".."}:
         raise ValueError("Invalid document name")
 
@@ -1538,7 +1550,7 @@ def resolve_documents_markdown_path(
     kind: str = "project",
 ) -> Path | None:
     """Locate extracted ``.md`` next to the source (or under artifacts)."""
-    name = os.path.basename((filename or "").strip())
+    name = nfc_filename(filename)
     if not name:
         return None
     kind_norm = (kind or "project").strip().lower()
@@ -1618,7 +1630,7 @@ def copy_documents_markdown_to_vault(
     if kind_norm not in {"project", "drawing"}:
         raise ValueError("kind must be project or drawing")
 
-    name = os.path.basename((filename or "").strip())
+    name = nfc_filename(filename)
     if not name or name in {".", ".."}:
         raise ValueError("Invalid document name")
 

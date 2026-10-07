@@ -1,5 +1,15 @@
 import type { FilePayload, GraphPayload, SearchHit, TreeNode } from "./types";
 
+/** macOS file pickers yield NFD Hangul. Uploads store and address NFC. */
+function fileWithNfcName(file: File): File {
+  const name = file.name.normalize("NFC");
+  if (!name || name === file.name) return file;
+  return new File([file], name, {
+    type: file.type,
+    lastModified: file.lastModified,
+  });
+}
+
 export type ShareEntry = {
   token: string;
   path: string;
@@ -374,8 +384,13 @@ export const api = {
     }),
   uploadFile: async (path: string, blob: Blob, filename?: string) => {
     const fd = new FormData();
-    fd.append("path", path);
-    fd.append("file", blob, filename || path.split("/").pop() || "upload.bin");
+    const storedPath = path.normalize("NFC");
+    fd.append("path", storedPath);
+    fd.append(
+      "file",
+      blob,
+      (filename || storedPath.split("/").pop() || "upload.bin").normalize("NFC"),
+    );
     const res = await fetch(`${BASE}/files/upload`, {
       method: "POST",
       credentials: "include",
@@ -559,6 +574,7 @@ export const api = {
   uploadDocumentsProjectFile: async (
     file: File,
   ): Promise<DocumentsUploadResult> => {
+    file = fileWithNfcName(file);
     const presign = await request<DocumentsPresignResult>(
       "/documents/projects/presign",
       {
@@ -607,6 +623,7 @@ export const api = {
   uploadDocumentsDrawingFile: async (
     file: File,
   ): Promise<DocumentsUploadResult> => {
+    file = fileWithNfcName(file);
     const presign = await request<DocumentsPresignResult>(
       "/documents/drawings/presign",
       {

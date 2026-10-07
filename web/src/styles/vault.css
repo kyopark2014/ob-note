@@ -1640,6 +1640,16 @@ html[data-theme="light"] .tree-item.selected {
   min-width: 0;
 }
 
+.app.is-narrow .agent-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(var(--agent-w), 100vw);
+  z-index: 40;
+  box-shadow: -8px 0 24px var(--shadow);
+}
+
 @media (max-width: 1024px) {
   /*
     Grid items with position:absolute/fixed inside a grid track still size to
@@ -1672,6 +1682,43 @@ html[data-theme="light"] .tree-item.selected {
   .main {
     grid-column: 2;
     min-width: 0;
+  }
+
+  /* Settings → Layout → PC: keep the desktop grid even when the window is narrow. */
+  .app.layout-desktop:not(.sidebar-collapsed),
+  .app.layout-desktop.agent-open:not(.sidebar-collapsed) {
+    grid-template-columns: var(--rail-w) var(--sidebar-w) 1fr !important;
+  }
+
+  .app.layout-desktop.agent-open:not(.sidebar-collapsed) {
+    grid-template-columns: var(--rail-w) var(--sidebar-w) 1fr var(--agent-w) !important;
+  }
+
+  .app.layout-desktop.sidebar-collapsed,
+  .app.layout-desktop.sidebar-collapsed.agent-open {
+    grid-template-columns: var(--rail-w) 1fr !important;
+  }
+
+  .app.layout-desktop.sidebar-collapsed.agent-open {
+    grid-template-columns: var(--rail-w) 1fr var(--agent-w) !important;
+  }
+
+  .app.layout-desktop:not(.sidebar-collapsed) .sidebar {
+    position: relative;
+    inset: auto;
+    width: auto !important;
+    max-width: none !important;
+    min-width: 0;
+    z-index: auto;
+    box-shadow: none;
+  }
+
+  .app.layout-desktop .sidebar-resizer {
+    display: block;
+  }
+
+  .app.layout-desktop .main {
+    grid-column: auto;
   }
 }
 
@@ -2277,8 +2324,13 @@ a.modal-btn {
   white-space: nowrap;
 }
 
-.meeting-head-actions .link-btn:hover {
+.meeting-head-actions .link-btn:hover:not(:disabled) {
   text-decoration: underline;
+}
+
+.meeting-head-actions .link-btn:disabled {
+  color: var(--text-muted);
+  cursor: default;
 }
 
 .meeting-sidebar-body {
@@ -3456,6 +3508,25 @@ html[data-theme="light"] .agent-loaded-file-remove:hover:not(:disabled) {
     width: min(var(--agent-w), 100vw);
     z-index: 40;
     box-shadow: -8px 0 24px var(--shadow);
+  }
+
+  .app.layout-desktop.agent-open,
+  .app.layout-desktop.sidebar-collapsed.agent-open {
+    grid-template-columns: var(--rail-w) var(--sidebar-w) 1fr var(--agent-w) !important;
+  }
+
+  .app.layout-desktop.sidebar-collapsed.agent-open {
+    grid-template-columns: var(--rail-w) 1fr var(--agent-w) !important;
+  }
+
+  .app.layout-desktop .agent-panel {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    z-index: auto;
+    box-shadow: none;
   }
 }
 

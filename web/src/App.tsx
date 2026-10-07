@@ -26,7 +26,7 @@ import {
 import { TabContextMenu, type TabContextMenuState, type TabMenuAction } from "./components/TabContextMenu";
 import { ImagePreview } from "./components/ImagePreview";
 import { VideoPreview } from "./components/VideoPreview";
-import { MarkdownEditor } from "./components/markdownEditor/MarkdownEditor";
+import { MarkdownEditor, type MarkdownEditorHandle } from "./components/markdownEditor/MarkdownEditor";
 import {
   AppearanceIcon,
   ArchiveIcon,
@@ -68,6 +68,14 @@ import {
 import { useMeetingLog } from "./meetingLog/useMeetingLog";
 import { useTheme } from "./hooks/useTheme";
 import type { Theme } from "./theme";
+import {
+  getLayoutMode,
+  labelToLayoutMode,
+  LAYOUT_OPTIONS,
+  layoutModeToLabel,
+  setLayoutMode as persistLayoutMode,
+  type LayoutMode,
+} from "./layoutSettings";
 import {
   getPinnedPaths,
   removePinnedPaths,
@@ -111,6 +119,7 @@ import type {
 } from "./types";
 
 const THEME_OPTIONS = ["Light", "Dark"] as const;
+const LAYOUT_MENU = [...LAYOUT_OPTIONS];
 const VIEW_OPTIONS = ["Images"] as const;
 const GRAPH_OPTIONS = ["Sync", "Rebuild", "Graph", "Configure"] as const;
 const DOCUMENTS_OPTIONS = ["Projects", "Drawings", "Configure"] as const;
@@ -251,7 +260,7 @@ function uniqueNotePath(parent: string, tree: TreeNode[]): string {
 }
 
 const LAST_NOTE_KEY = "ob-note:last-note-path";
-/** Match CSS mobile overlay layout (Files/Search/Meeting full-bleed). */
+/** Viewport width that switches Auto layout to the mobile overlay. Not a device check. */
 const NARROW_LAYOUT_MQ = "(max-width: 1024px)";
 
 function flattenMarkdownPaths(nodes: TreeNode[]): string[] {
@@ -383,7 +392,10 @@ function extFromImageMime(mime: string): string {
 }
 
 function safeUploadBaseName(fileName: string, fallback: string): string {
-  const base = (fileName.split(/[/\\]/).pop() || fallback).replace(/[\\/:*?"<>|#\[\]]/g, "_");
+  const base = (fileName.normalize("NFC").split(/[/\\]/).pop() || fallback).replace(
+    /[\\/:*?"<>|#\[\]]/g,
+    "_",
+  );
   return base || fallback;
 }
 
@@ -595,9 +607,12 @@ export default function App() {
   } | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [panel, setPanel] = useState<PanelMode>("files");
-  const [isNarrow, setIsNarrow] = useState(() =>
+  const [viewportNarrow, setViewportNarrow] = useState(() =>
     typeof window !== "undefined" ? window.matchMedia(NARROW_LAYOUT_MQ).matches : false,
   );
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => getLayoutMode());
+  const isNarrow =
+    layoutMode === "mobile" ? true : layoutMode === "desktop" ? false : viewportNarrow;
   const meeting = useMeetingLog(userId);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [treeRefreshing, setTreeRefreshing] = useState(false);
@@ -646,6 +661,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const [viewOpen, setViewOpen] = useState(false);
+  const [layoutOpen, setLayoutOpen] = useState(false);
   const [sharePermissionOpen, setSharePermissionOpen] = useState(false);
   const [sharePermission, setSharePermission] = useState<SharePermission>("one_hop");
   const [graphMenuOpen, setGraphMenuOpen] = useState(false);
@@ -700,7 +716,7 @@ export default function App() {
 
   useEffect(() => {
     const mq = window.matchMedia(NARROW_LAYOUT_MQ);
-    const sync = () => setIsNarrow(mq.matches);
+    const sync = () => setViewportNarrow(mq.matches);
     sync();
     mq.addEventListener("change", sync);
     return () => mq.removeEventListener("change", sync);
@@ -714,11 +730,13 @@ export default function App() {
   const appearanceBtnRef = useRef<HTMLButtonElement>(null);
   const sharePermissionBtnRef = useRef<HTMLButtonElement>(null);
   const viewBtnRef = useRef<HTMLButtonElement>(null);
+  const layoutBtnRef = useRef<HTMLButtonElement>(null);
   const graphBtnRef = useRef<HTMLButtonElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const documentsBtnRef = useRef<HTMLButtonElement>(null);
   const settingsFlyoutRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const markdownEditorRef = useRef<MarkdownEditorHandle | null>(null);
   const editorComposingRef = useRef(false);
   const resizeEditor = useCallback((el: HTMLTextAreaElement | null) => {
     if (!el || editorComposingRef.current) return;
@@ -753,6 +771,19 @@ export default function App() {
   activePathRef.current = activePath;
   tabsRef.current = tabs;
   treeRef.current = tree;
+
+  const openSourceEditor = useCallback(() => {
+    const path = activePathRef.current;
+    const handle = markdownEditorRef.current;
+    if (!handle) {
+      setViewMode("edit");
+      return;
+    }
+    handle.flushThen(() => {
+      if (activePathRef.current !== path) return;
+      setViewMode("edit");
+    });
+  }, []);
 
   const updatePinnedPaths = useCallback((next: string[]) => {
     setPinnedPathsState(next);
@@ -927,6 +958,7 @@ export default function App() {
     setSettingsOpen(false);
     setAppearanceOpen(false);
     setViewOpen(false);
+    setLayoutOpen(false);
     setSharePermissionOpen(false);
     setGraphMenuOpen(false);
     setSharedListOpen(false);
@@ -1141,6 +1173,7 @@ export default function App() {
     if (!settingsOpen) {
       setAppearanceOpen(false);
       setViewOpen(false);
+      setLayoutOpen(false);
       setSharePermissionOpen(false);
       setGraphMenuOpen(false);
       setModelMenuOpen(false);
@@ -1296,7 +1329,7 @@ export default function App() {
             },
           ];
         });
-        if (window.matchMedia(NARROW_LAYOUT_MQ).matches) {
+        if (isNarrow) {
           setPanel("hidden");
         } else {
           setPanel("files");
@@ -1376,7 +1409,7 @@ export default function App() {
         ];
       });
       // Narrow / mobile: dismiss overlay panel so the note view fills the screen.
-      if (window.matchMedia(NARROW_LAYOUT_MQ).matches) {
+      if (isNarrow) {
         setPanel("hidden");
       } else {
         setPanel("files");
@@ -1384,7 +1417,7 @@ export default function App() {
       setViewMode("preview");
       return true;
     },
-    [dirty, file?.content, persistNote, pinnedPaths, refreshTree, showAlert, updatePinnedPaths],
+    [dirty, file?.content, isNarrow, persistNote, pinnedPaths, refreshTree, showAlert, updatePinnedPaths],
   );
 
   // Deep link (?note=…) → last note → first markdown. Login gate keeps ?note= until auth succeeds.
@@ -1977,10 +2010,11 @@ export default function App() {
   }, [createNoteIn, draftParentPath]);
 
   const saveMeetingToVault = useCallback(async () => {
-    const source =
-      meeting.batchEntries.length > 0 ? meeting.batchEntries : meeting.entries;
+    const source = meeting.batchEntries.filter((entry) =>
+      String(entry.text || "").trim(),
+    );
     if (!source.length) {
-      meeting.setStatus("저장할 회의 기록이 없습니다.");
+      meeting.setStatus("보낼 배치 기록이 없습니다.");
       return;
     }
     meeting.setSavingVault(true);
@@ -1995,14 +2029,14 @@ export default function App() {
       const md = buildMeetingMarkdown(title, source, meeting.recordedAt);
       await api.writeFile(path, md);
       await refreshTree();
-      meeting.setStatus(`Vault에 저장했습니다: ${path}`);
+      meeting.setStatus(`노트로 저장했습니다: ${path}`);
       meeting.setCanSaveVault(false);
       setPanel("files");
       await openFile(path);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      meeting.setStatus(`Vault 저장 실패: ${msg}`);
-      void showAlert(msg, "Vault 저장 실패");
+      meeting.setStatus(`노트 저장 실패: ${msg}`);
+      void showAlert(msg, "노트 저장 실패");
     } finally {
       meeting.setSavingVault(false);
     }
@@ -2625,6 +2659,7 @@ export default function App() {
       setSettingsOpen(false);
       setAppearanceOpen(false);
       setViewOpen(false);
+      setLayoutOpen(false);
       setSharePermissionOpen(false);
       setDocumentsMenuOpen(false);
       setCompressPopupOpen(true);
@@ -2672,6 +2707,7 @@ export default function App() {
     setSettingsOpen(false);
     setAppearanceOpen(false);
     setViewOpen(false);
+    setLayoutOpen(false);
     setSharePermissionOpen(false);
     setDocumentsMenuOpen(false);
     setClearingOpen(false);
@@ -3088,7 +3124,7 @@ export default function App() {
 
   return (
     <div
-      className={`app${panel === "hidden" ? " sidebar-collapsed" : " panel-open"}${isNarrow ? " is-narrow" : ""}${agentOpen ? " agent-open" : ""}${sidebarResizing || agentResizing ? " is-resizing" : ""}${noteFullscreen ? " note-fullscreen" : ""}${noteFullscreen && fullscreenChrome ? " fullscreen-chrome" : ""}`}
+      className={`app${panel === "hidden" ? " sidebar-collapsed" : " panel-open"}${isNarrow ? " is-narrow" : ""}${layoutMode === "desktop" ? " layout-desktop" : ""}${layoutMode === "mobile" ? " layout-mobile" : ""}${agentOpen ? " agent-open" : ""}${sidebarResizing || agentResizing ? " is-resizing" : ""}${noteFullscreen ? " note-fullscreen" : ""}${noteFullscreen && fullscreenChrome ? " fullscreen-chrome" : ""}`}
       style={{
         ["--sidebar-w" as string]: `${sidebarWidth}px`,
         ["--agent-w" as string]: `${agentWidth}px`,
@@ -3148,6 +3184,7 @@ export default function App() {
             setSettingsOpen(false);
             setAppearanceOpen(false);
             setViewOpen(false);
+            setLayoutOpen(false);
             setModelMenuOpen(false);
             setGraphMenuOpen((v) => !v);
           }}
@@ -3177,6 +3214,7 @@ export default function App() {
             setSettingsOpen(false);
             setAppearanceOpen(false);
             setViewOpen(false);
+            setLayoutOpen(false);
             setGraphMenuOpen(false);
             setModelMenuOpen((v) => !v);
           }}
@@ -3217,6 +3255,7 @@ export default function App() {
             onClick={() => {
               setAppearanceOpen(false);
               setViewOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               setDocumentsMenuOpen(false);
               void runVaultSync();
@@ -3238,6 +3277,7 @@ export default function App() {
             onClick={() => {
               setAppearanceOpen(false);
               setViewOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               setDocumentsMenuOpen(false);
               setSettingsOpen(false);
@@ -3254,6 +3294,7 @@ export default function App() {
             onClick={() => {
               setAppearanceOpen(false);
               setViewOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               setDocumentsMenuOpen(false);
               setSettingsOpen(false);
@@ -3288,6 +3329,7 @@ export default function App() {
             onClick={() => {
               setAppearanceOpen(false);
               setViewOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               setDocumentsMenuOpen((v) => !v);
             }}
@@ -3303,6 +3345,7 @@ export default function App() {
             onClick={() => {
               setAppearanceOpen(false);
               setViewOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               setDocumentsMenuOpen(false);
               setSettingsOpen(false);
@@ -3322,12 +3365,31 @@ export default function App() {
             onClick={() => {
               setAppearanceOpen(false);
               setViewOpen(false);
+              setLayoutOpen(false);
               setDocumentsMenuOpen(false);
               setSharePermissionOpen((v) => !v);
             }}
           >
             <ShareListIcon />
             <span>Share permission ({sharePermissionToLabel(sharePermission)})</span>
+          </button>
+          <button
+            ref={layoutBtnRef}
+            type="button"
+            className={`rail-settings-btn${layoutOpen ? " is-active" : ""}`}
+            aria-expanded={layoutOpen}
+            aria-haspopup="dialog"
+            title="Auto follows the window width. PC keeps the desktop layout on this browser."
+            onClick={() => {
+              setAppearanceOpen(false);
+              setViewOpen(false);
+              setSharePermissionOpen(false);
+              setDocumentsMenuOpen(false);
+              setLayoutOpen((v) => !v);
+            }}
+          >
+            <ViewIcon />
+            <span>Layout ({layoutModeToLabel(layoutMode)})</span>
           </button>
           <button
             ref={viewBtnRef}
@@ -3337,6 +3399,7 @@ export default function App() {
             aria-haspopup="dialog"
             onClick={() => {
               setAppearanceOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               setDocumentsMenuOpen(false);
               setViewOpen((v) => !v);
@@ -3353,6 +3416,7 @@ export default function App() {
             aria-haspopup="dialog"
             onClick={() => {
               setViewOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               setDocumentsMenuOpen(false);
               setAppearanceOpen((v) => !v);
@@ -3368,6 +3432,7 @@ export default function App() {
             onClick={() => {
               setAppearanceOpen(false);
               setViewOpen(false);
+              setLayoutOpen(false);
               setSharePermissionOpen(false);
               void handleLogout();
             }}
@@ -3558,6 +3623,23 @@ export default function App() {
             });
           }}
           onClose={() => setSharePermissionOpen(false)}
+        />
+      )}
+      {layoutOpen && (
+        <ConfigDrawer
+          title="Layout"
+          options={LAYOUT_MENU}
+          selected={[layoutModeToLabel(layoutMode)]}
+          mode="single"
+          anchorEl={layoutBtnRef.current}
+          onChange={(next) => {
+            const label = next[0];
+            if (!label) return;
+            const mode = labelToLayoutMode(label);
+            persistLayoutMode(mode);
+            setLayoutMode(mode);
+          }}
+          onClose={() => setLayoutOpen(false)}
         />
       )}
       {viewOpen && (
@@ -3892,7 +3974,7 @@ export default function App() {
                       className="icon-btn"
                       data-tooltip="Edit"
                       aria-label="Edit"
-                      onClick={() => setViewMode("edit")}
+                      onClick={openSourceEditor}
                       style={{ color: viewMode === "edit" ? "var(--accent)" : undefined }}
                     >
                       <EditIcon />
@@ -3977,6 +4059,7 @@ export default function App() {
                   ) : (
                     <MarkdownEditor
                       key={activePath}
+                      handleRef={markdownEditorRef}
                       content={draft}
                       notePath={activePath}
                       onChange={(markdown) => {

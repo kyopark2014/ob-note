@@ -264,8 +264,8 @@ export function AgentChatInput({
   async function attachImageFile(file: File) {
     const previewUrl = URL.createObjectURL(file);
     try {
-      const vaultPath = agentUploadPath(notePath ?? note?.path, file.name);
-      const result = await api.uploadFile(vaultPath, file, file.name);
+      const vaultPath = agentUploadPath(notePath ?? note?.path, file.name.normalize("NFC"));
+      const result = await api.uploadFile(vaultPath, file, file.name.normalize("NFC"));
       setAttachments((prev) => [
         ...prev,
         {
@@ -290,14 +290,14 @@ export function AgentChatInput({
           await attachImageFile(normalizeImageFile(file, "uploaded_image"));
           continue;
         }
-        const vaultPath = agentUploadPath(notePath ?? note?.path, file.name);
-        const result = await api.uploadFile(vaultPath, file, file.name);
+        const vaultPath = agentUploadPath(notePath ?? note?.path, file.name.normalize("NFC"));
+        const result = await api.uploadFile(vaultPath, file, file.name.normalize("NFC"));
         const path = result.path || vaultPath;
         setLoadedFiles((prev) => {
           const next = prev.filter((item) => item.path !== path);
           return [
             ...next,
-            { path, name: file.name, size: result.size ?? file.size },
+            { path, name: file.name.normalize("NFC"), size: result.size ?? file.size },
           ];
         });
       }

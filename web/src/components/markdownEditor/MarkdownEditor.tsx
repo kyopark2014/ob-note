@@ -1,5 +1,5 @@
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
-import { useEffect, useRef, type DragEvent as ReactDragEvent } from "react";
+import { useEffect, useRef, type DragEvent as ReactDragEvent, type RefObject } from "react";
 import {
   getActiveVaultDrag,
   hasExternalFileDrag,
@@ -15,6 +15,11 @@ import {
   type VaultBridge,
 } from "./extensions";
 
+export type MarkdownEditorHandle = {
+  /** Push the live document to onChange, waiting out an open IME composition. */
+  flushThen: (done: () => void) => void;
+};
+
 type Props = {
   content: string;
   notePath?: string | null;
@@ -22,6 +27,7 @@ type Props = {
   onWikiClick: (target: string) => void;
   onUploadImage?: (file: File) => Promise<string>;
   onUploadVideos?: (files: File[]) => Promise<string>;
+  handleRef?: RefObject<MarkdownEditorHandle | null>;
 };
 
 function isVideoUpload(file: File): boolean {
@@ -58,6 +64,7 @@ export function MarkdownEditor({
   onWikiClick,
   onUploadImage,
   onUploadVideos,
+  handleRef,
 }: Props) {
   const paneRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<Editor | null>(null);
@@ -65,6 +72,8 @@ export function MarkdownEditor({
   const acceptExternalRef = useRef(false);
   const syncingRef = useRef(false);
   const composingRef = useRef(false);
+  const composeTimerRef = useRef<number | null>(null);
+  const flushWaitersRef = useRef<Array<() => void>>([]);
   const onChangeRef = useRef(onChange);
   const uploadImageRef = useRef(onUploadImage);
   const uploadVideosRef = useRef(onUploadVideos);
@@ -89,6 +98,79 @@ export function MarkdownEditor({
 
   const extensionsRef = useRef<ReturnType<typeof createVaultExtensions> | null>(null);
   if (!extensionsRef.current) extensionsRef.current = createVaultExtensions(bridgeRef);
+
+  const publishNow = () => {
+    const current = editorRef.current;
+    if (!current || current.isDestroyed) return;
+    if (composingRef.current || current.view.composing) return;
+    const markdown = current.getMarkdown();
+    if (markdown === emittedRef.current) return;
+    emittedRef.current = markdown;
+    onChangeRef.current(markdown);
+  };
+  const publishNowRef = useRef(publishNow);
+  publishNowRef.current = publishNow;
+
+  const drainFlushWaiters = () => {
+    const waiters = flushWaitersRef.current.splice(0);
+    for (const waiter of waiters) waiter();
+  };
+
+  // compositionend's document update can land after the event. Keep the editor
+  // mounted until this timer runs so a mode switch cannot drop the last syllable.
+  const schedulePublishRef = useRef<() => void>(() => {});
+  schedulePublishRef.current = () => {
+    queueMicrotask(() => publishNowRef.current());
+    if (composeTimerRef.current != null) window.clearTimeout(composeTimerRef.current);
+    composeTimerRef.current = window.setTimeout(() => {
+      composeTimerRef.current = null;
+      try {
+        publishNowRef.current();
+      } finally {
+        drainFlushWaiters();
+      }
+    }, 30);
+  };
+
+  const flushThenRef = useRef<(done: () => void) => void>(() => {});
+  flushThenRef.current = (done) => {
+    const current = editorRef.current;
+    if (!current || current.isDestroyed) {
+      done();
+      return;
+    }
+    const composing = composingRef.current || current.view.composing;
+    if (composing) {
+      flushWaitersRef.current.push(done);
+      current.view.dom.blur();
+      if (composeTimerRef.current == null) schedulePublishRef.current();
+      return;
+    }
+    if (composeTimerRef.current != null) {
+      flushWaitersRef.current.push(done);
+      return;
+    }
+    try {
+      publishNow();
+    } finally {
+      done();
+    }
+  };
+
+  if (handleRef) {
+    handleRef.current = { flushThen: (done) => flushThenRef.current(done) };
+  }
+
+  useEffect(() => {
+    return () => {
+      if (composeTimerRef.current != null) {
+        window.clearTimeout(composeTimerRef.current);
+        composeTimerRef.current = null;
+      }
+      flushWaitersRef.current = [];
+      if (handleRef) handleRef.current = null;
+    };
+  }, [handleRef]);
 
   const editor = useEditor(
     {
@@ -116,16 +198,7 @@ export function MarkdownEditor({
           },
           compositionend: () => {
             composingRef.current = false;
-            const publish = () => {
-              const current = editorRef.current;
-              if (!current || composingRef.current || current.view.composing) return;
-              const markdown = current.getMarkdown();
-              if (markdown === emittedRef.current) return;
-              emittedRef.current = markdown;
-              onChangeRef.current(markdown);
-            };
-            queueMicrotask(publish);
-            window.setTimeout(publish, 30);
+            schedulePublishRef.current();
             return false;
           },
         },

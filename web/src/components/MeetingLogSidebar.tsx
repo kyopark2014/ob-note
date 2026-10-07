@@ -29,11 +29,9 @@ export function MeetingLogSidebar({
     setView,
     title,
     setTitle,
-    canSaveVault,
     savingVault,
     toggleListening,
     selectSpeakerMode,
-    copyLog,
     entries,
     batchEntries,
     interim,
@@ -68,6 +66,8 @@ export function MeetingLogSidebar({
     requestAnimationFrame(() => requestAnimationFrame(pin));
   }, [entries, batchEntries, interim, view]);
 
+  const canSendNote = batchEntries.some((entry) => String(entry.text || "").trim());
+
   const commitTitle = () => {
     const next = draftTitle.trim() || DEFAULT_MEETING_TITLE;
     setTitle(next);
@@ -85,8 +85,14 @@ export function MeetingLogSidebar({
       <div className="sidebar-header meeting-sidebar-header">
         <span>회의 로그</span>
         <div className="meeting-head-actions">
-          <button type="button" className="link-btn" onClick={() => void copyLog()}>
-            복사
+          <button
+            type="button"
+            className="link-btn"
+            disabled={!canSendNote || savingVault || listening || batchBusy}
+            title={canSendNote ? "배치 기록을 노트로 저장" : "배치에 텍스트가 있을 때만 보낼 수 있습니다"}
+            onClick={onSaveVault}
+          >
+            {savingVault ? "저장 중…" : "보내기"}
           </button>
           <button
             type="button"
@@ -223,17 +229,6 @@ export function MeetingLogSidebar({
               ))}
             </div>
           </div>
-
-          {canSaveVault && (
-            <button
-              type="button"
-              className="meeting-vault-btn"
-              disabled={savingVault || listening || batchBusy}
-              onClick={onSaveVault}
-            >
-              {savingVault ? "Vault 저장 중…" : "Vault 저장"}
-            </button>
-          )}
         </div>
 
         <div ref={logRef} className="meeting-log" aria-live="polite">

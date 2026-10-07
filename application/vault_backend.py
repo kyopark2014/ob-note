@@ -14,6 +14,7 @@ import contextvars
 import logging
 import os
 import shutil
+import unicodedata
 import threading
 import time
 from contextlib import contextmanager
@@ -199,16 +200,49 @@ def vault_root(user_id: Optional[str] = None) -> Path:
     return root.resolve()
 
 
+def _nfc_rel(rel: str) -> str:
+    """Vault-relative path with composed Hangul (NFC)."""
+    return unicodedata.normalize("NFC", (rel or "").replace("\\", "/").lstrip("/"))
+
+
 def resolve_vault_path(rel: str) -> Path:
-    """Resolve a vault-relative path; reject traversal outside vault."""
+    """Resolve a vault-relative path; reject traversal outside vault.
+
+    New files are addressed as NFC. macOS uploads often arrive as NFD.
+    """
     root = vault_root()
-    cleaned = (rel or "").replace("\\", "/").lstrip("/")
+    cleaned = _nfc_rel(rel)
     if ".." in cleaned.split("/"):
         raise ValueError("Path traversal is not allowed")
     target = (root / cleaned).resolve()
     if root != target and root not in target.parents:
         raise ValueError("Path escapes vault root")
     return target
+
+
+def retire_nfd_duplicate(rel: str) -> Optional[str]:
+    """Remove a decomposed-Hangul file once the NFC spelling has been written.
+
+    Returns the vault-relative path that was removed, if any.
+    """
+    nfc_rel = _nfc_rel(rel)
+    nfd_rel = unicodedata.normalize("NFD", nfc_rel)
+    if not nfd_rel or nfd_rel == nfc_rel or ".." in nfd_rel.split("/"):
+        return None
+    root = vault_root()
+    try:
+        nfc_path = resolve_vault_path(nfc_rel)
+    except ValueError:
+        return None
+    if not nfc_path.is_file():
+        return None
+    nfd_path = (root / nfd_rel).resolve()
+    if root != nfd_path and root not in nfd_path.parents:
+        return None
+    if not nfd_path.is_file() or nfd_path == nfc_path:
+        return None
+    nfd_path.unlink()
+    return nfd_rel
 
 
 def find_vault_file(rel: str) -> Optional[Path]:
@@ -219,17 +253,32 @@ def find_vault_file(rel: str) -> Optional[Path]:
         return None
     if target.is_file():
         return target
-    name = Path((rel or "").replace("\\", "/")).name
+    # Files saved before NFC normalization may still use decomposed Hangul.
+    nfd_rel = unicodedata.normalize("NFD", _nfc_rel(rel))
+    if nfd_rel and nfd_rel != _nfc_rel(rel):
+        root = vault_root()
+        if ".." not in nfd_rel.split("/"):
+            nfd_target = (root / nfd_rel).resolve()
+            if (root == nfd_target or root in nfd_target.parents) and nfd_target.is_file():
+                return nfd_target
+    name = unicodedata.normalize("NFC", Path((rel or "").replace("\\", "/")).name)
     if not name or name in {".", ".."}:
         return None
     root = vault_root()
     matches: list[Path] = []
-    for path in root.rglob(name):
-        if not path.is_file():
-            continue
-        if ".vault" in path.parts:
-            continue
-        matches.append(path)
+    spellings = [name]
+    nfd_name = unicodedata.normalize("NFD", name)
+    if nfd_name != name:
+        spellings.append(nfd_name)
+    for spelling in spellings:
+        for path in root.rglob(spelling):
+            if not path.is_file():
+                continue
+            if ".vault" in path.parts:
+                continue
+            matches.append(path)
+        if matches:
+            break
     if not matches:
         return None
     matches.sort(key=lambda p: (len(p.relative_to(root).parts), str(p).lower()))

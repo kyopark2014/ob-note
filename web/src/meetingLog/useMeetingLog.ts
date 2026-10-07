@@ -503,8 +503,11 @@ export function useMeetingLog(userId: string | null) {
       setHasRecordedAudio(false);
       setView("batch");
       setCanSaveVault(true);
+      const added = segmentEntries.filter((entry) => String(entry.text || "").trim()).length;
       setStatus(
-        `배치 변환이 끝났습니다. 이번 ${segmentEntries.length}개 구간 추가. Vault에 저장할 수 있습니다.`,
+        added
+          ? `배치 변환이 끝났습니다. ${added}개 구간을 추가했습니다. 보내기로 노트에 저장하세요.`
+          : "배치 변환이 끝났습니다. 추가된 텍스트가 없습니다.",
       );
     } catch (err) {
       console.error(err);
