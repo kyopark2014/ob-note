@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-DEFAULT_MODEL = "Claude 4.6 Sonnet"
+DEFAULT_MODEL = "Claude 5.0 Sonnet"
 
 # UI order (same family as harness-work routes_config.MODELS).
 MODEL_NAMES: list[str] = [
@@ -22,6 +22,7 @@ MODEL_NAMES: list[str] = [
     "OpenAI GPT 5.4",
     "OpenAI GPT 5.5",
     "OpenAI GPT 6 Astra",
+    "OpenAI GPT 6.1 Sol",
     "OpenAI GPT 6 Sol",
     "OpenAI GPT 6 Luna",
     "OpenAI GPT 5.6 Sol",
@@ -100,6 +101,10 @@ _MODEL_PROFILES: dict[str, dict[str, Any]] = {
     "OpenAI GPT 6 Astra": {
         "model_type": "openai",
         "model_id": "us.openai.gpt-6-astra",
+    },
+    "OpenAI GPT 6.1 Sol": {
+        "model_type": "openai",
+        "model_id": "us.openai.gpt-6.1-sol",
     },
     "OpenAI GPT 6 Sol": {
         "model_type": "openai",
