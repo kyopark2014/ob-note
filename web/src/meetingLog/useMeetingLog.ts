@@ -11,7 +11,7 @@ import {
   type SpeakerId,
 } from "./config";
 import { decodeEventStream, encodeAudioEvent } from "./eventstream";
-import { entriesToCopyText } from "./format";
+import { entriesToCopyText, meetingFileBaseName } from "./format";
 import type { BatchEntry, InterimState, MeetingEntry, MeetingView } from "./types";
 
 type SpeakerGroup = { speaker: string; text: string; start: number };
@@ -45,6 +45,7 @@ export function useMeetingLog(userId: string | null) {
   const [listening, setListening] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   const [hasRecordedAudio, setHasRecordedAudio] = useState(false);
+  const [hasDownloadableAudio, setHasDownloadableAudio] = useState(false);
   const [autoSpeaker, setAutoSpeaker] = useState(true);
   const [pinnedSpeaker, setPinnedSpeaker] = useState<SpeakerId>("A");
   const [interim, setInterim] = useState<InterimState>(null);
@@ -64,6 +65,8 @@ export function useMeetingLog(userId: string | null) {
   const batchEntriesRef = useRef(batchEntries);
   const recordedAtRef = useRef(recordedAt);
   const pcmChunksRef = useRef<Uint8Array[]>([]);
+  /** Accumulates audio across the whole meeting (all segments) so it can be downloaded after recording stops. */
+  const allPcmChunksRef = useRef<Uint8Array[]>([]);
   /** Seconds from meeting start to the current recording segment (wall-clock). */
   const sessionOffsetRef = useRef(0);
   /** Offset captured when the current segment's batch job is queued. */
@@ -147,6 +150,8 @@ export function useMeetingLog(userId: string | null) {
       setTitle(DEFAULT_MEETING_TITLE);
       seenFinalIdsRef.current.clear();
       pcmChunksRef.current = [];
+      allPcmChunksRef.current = [];
+      setHasDownloadableAudio(false);
       sessionOffsetRef.current = 0;
       pendingBatchOffsetRef.current = 0;
       setHydratedUserId(null);
@@ -174,6 +179,8 @@ export function useMeetingLog(userId: string | null) {
     setTitle(DEFAULT_MEETING_TITLE);
     seenFinalIdsRef.current.clear();
     pcmChunksRef.current = [];
+    allPcmChunksRef.current = [];
+    setHasDownloadableAudio(false);
     sessionOffsetRef.current = 0;
     pendingBatchOffsetRef.current = 0;
     setHydratedUserId(userId);
@@ -402,6 +409,7 @@ export function useMeetingLog(userId: string | null) {
       const input = event.inputBuffer.getChannelData(0);
       const pcm = floatTo16BitPcm(input, audioCtx.sampleRate);
       pcmChunksRef.current.push(pcm);
+      allPcmChunksRef.current.push(pcm);
       sendPcm(pcm);
     };
     source.connect(processor);
@@ -562,6 +570,9 @@ export function useMeetingLog(userId: string | null) {
       setInterim(null);
       const ready = recordedSeconds(pcmChunksRef.current) >= 1;
       setHasRecordedAudio(ready);
+      if (recordedSeconds(allPcmChunksRef.current) >= 1) {
+        setHasDownloadableAudio(true);
+      }
       pendingBatchOffsetRef.current = sessionOffsetRef.current;
       if (!silent) {
         const extra = ready
@@ -745,15 +756,45 @@ export function useMeetingLog(userId: string | null) {
     setBatchEntries([]);
     seenFinalIdsRef.current.clear();
     pcmChunksRef.current = [];
+    allPcmChunksRef.current = [];
     sessionOffsetRef.current = 0;
     pendingBatchOffsetRef.current = 0;
     setHasRecordedAudio(false);
+    setHasDownloadableAudio(false);
     setCanSaveVault(false);
     setInterim(null);
     setTitle(DEFAULT_MEETING_TITLE);
     setStatus("기록을 지웠습니다. 마이크를 눌러 다시 시작하세요.");
     return true;
   }, [batchEntries.length]);
+
+  /** Download the full meeting recording (all segments) as a WAV file. */
+  const downloadAudio = useCallback(() => {
+    if (recordedSeconds(allPcmChunksRef.current) < 1) {
+      setStatus("다운로드할 녹음 파일이 없습니다.");
+      return;
+    }
+    try {
+      const wav = encodeWav(allPcmChunksRef.current);
+      const url = URL.createObjectURL(wav);
+      const typed = title.trim();
+      const baseName = meetingFileBaseName(
+        typed && typed !== DEFAULT_MEETING_TITLE ? typed : DEFAULT_MEETING_TITLE,
+        recordedAtRef.current,
+      );
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${baseName}.wav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setStatus("녹음 파일을 다운로드했습니다.");
+    } catch (err) {
+      console.error(err);
+      setStatus("녹음 파일 다운로드에 실패했습니다.");
+    }
+  }, [title]);
 
   const copyLog = useCallback(async () => {
     const text = entriesToCopyText(view, entries, batchEntries);
@@ -800,6 +841,7 @@ export function useMeetingLog(userId: string | null) {
     listening,
     batchBusy,
     hasRecordedAudio,
+    hasDownloadableAudio,
     autoSpeaker,
     pinnedSpeaker,
     interim,
@@ -818,6 +860,7 @@ export function useMeetingLog(userId: string | null) {
     selectSpeakerMode,
     clearLog,
     copyLog,
+    downloadAudio,
     setStatus,
   };
 }

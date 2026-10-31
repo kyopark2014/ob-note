@@ -37,6 +37,8 @@ export function MeetingLogSidebar({
     interim,
     cycleSpeaker,
     recordedAt,
+    hasDownloadableAudio,
+    downloadAudio,
   } = meeting;
 
   const [editingTitle, setEditingTitle] = useState(false);
@@ -93,6 +95,19 @@ export function MeetingLogSidebar({
             onClick={onSaveVault}
           >
             {savingVault ? "저장 중…" : "보내기"}
+          </button>
+          <button
+            type="button"
+            className="link-btn"
+            disabled={!hasDownloadableAudio || listening || batchBusy}
+            title={
+              hasDownloadableAudio
+                ? "녹음 파일을 WAV로 다운로드"
+                : "녹음 파일이 없을 때는 다운로드할 수 없습니다"
+            }
+            onClick={downloadAudio}
+          >
+            다운로드
           </button>
           <button
             type="button"
