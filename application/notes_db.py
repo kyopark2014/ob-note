@@ -394,7 +394,8 @@ def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
                     )
                     dropped.extend(_drop_note_ids(conn, [dest["note_id"]]))
                 title = row["title"]
-                if Path(src).stem != Path(dst).stem and title == Path(src).stem:
+                # File rename: title follows the new stem (H1 is synced on rename).
+                if Path(src).stem != Path(dst).stem:
                     title = Path(dst).stem
                 conn.execute(
                     """

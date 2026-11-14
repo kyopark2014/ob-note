@@ -1,4 +1,4 @@
-"""Public share links for vault notes and folders (token → path, no cookie required).
+"""Public share links for vault notes, files, and folders (token → path, no cookie).
 
 Per-user registry: ``{user}/.vault/shares.json`` (list/create/delete).
 Global index: ``_public/shares_index.json`` (token → user_id + path) so
@@ -6,6 +6,7 @@ anonymous ``/s/{token}`` can resolve the owning vault without scanning users.
 
 Share ``type``:
   - ``note`` (default / missing): single markdown file at ``path``
+  - ``file``: binary attachment (pdf / ppt / excel / zip, …) served at ``/s/{token}``
   - ``folder``: folder at ``path``; public index lists direct ``.md`` children only;
     notes open under ``/s/{token}/n/{name}`` (no per-note tokens).
     Wiki scope is controlled by shares.json ``permission``
@@ -34,6 +35,28 @@ _INDEX_NAME = "shares_index.json"
 # Folder public-share wiki scope (stored in shares.json top-level ``permission``).
 SHARE_PERMISSIONS = ("current", "one_hop", "folder", "vault")
 DEFAULT_SHARE_PERMISSION = "one_hop"
+
+# Vault attachments that can receive their own public share token.
+SHAREABLE_FILE_EXTENSIONS = frozenset(
+    {
+        ".pdf",
+        ".ppt",
+        ".pptx",
+        ".xls",
+        ".xlsx",
+        ".zip",
+        ".doc",
+        ".docx",
+    }
+)
+
+
+def is_shareable_file_path(path: str) -> bool:
+    """True for binary attachments that support a dedicated public share link."""
+    cleaned = (path or "").replace("\\", "/").lstrip("/")
+    if not cleaned or ".." in cleaned.split("/"):
+        return False
+    return Path(cleaned).suffix.lower() in SHAREABLE_FILE_EXTENSIONS
 
 
 def _shares_path() -> Path:
@@ -239,12 +262,22 @@ def _save_index(data: dict[str, Any]) -> None:
 
 
 def share_entry_type(entry: Optional[dict[str, Any]]) -> str:
-    """Return ``note`` or ``folder`` (missing type → note for backward compat)."""
+    """Return ``note``, ``file``, or ``folder`` (missing type → note for compat)."""
     if not isinstance(entry, dict):
         return "note"
-    if entry.get("type") == "folder":
+    st = entry.get("type")
+    if st == "folder":
         return "folder"
+    if st == "file":
+        return "file"
     return "note"
+
+
+def _share_title_for_path(path: str, share_type: str) -> str:
+    name = Path(path).name
+    if share_type in {"folder", "file"}:
+        return name
+    return Path(path).stem
 
 
 def _index_upsert(token: str, entry: dict[str, Any]) -> None:
@@ -259,8 +292,8 @@ def _index_upsert(token: str, entry: dict[str, Any]) -> None:
         "created_at": entry.get("created_at"),
     }
     st = share_entry_type(entry)
-    if st == "folder":
-        payload["type"] = "folder"
+    if st in {"folder", "file"}:
+        payload["type"] = st
     index.setdefault("shares", {})[token] = payload
     _save_index(index)
 
@@ -349,7 +382,7 @@ def get_share(token: str, *, refresh: bool = True) -> Optional[dict[str, Any]]:
 
 
 def create_or_get_share(path: str) -> dict[str, Any]:
-    """Create a durable share token for a markdown note or folder (reuse if exists)."""
+    """Create a durable share token for a note, file, or folder (reuse if exists)."""
     cleaned = (path or "").replace("\\", "/").lstrip("/")
     if not cleaned:
         raise ValueError("Path is required")
@@ -366,6 +399,15 @@ def create_or_get_share(path: str) -> dict[str, Any]:
         if not target.is_file():
             raise FileNotFoundError("Note not found")
         title = target.stem
+        try:
+            publish_vault_file_to_s3(cleaned)
+        except Exception:
+            pass
+    elif is_shareable_file_path(cleaned):
+        share_type = "file"
+        if not vault_object_exists(cleaned):
+            raise FileNotFoundError("File not found")
+        title = Path(cleaned).name
         try:
             publish_vault_file_to_s3(cleaned)
         except Exception:
@@ -438,12 +480,11 @@ def list_shares() -> list[dict[str, Any]]:
                 if not vault_folder_exists(path):
                     stale.append(token)
                     continue
-                title = entry.get("title") or Path(path).name
             else:
                 if not vault_object_exists(path):
                     stale.append(token)
                     continue
-                title = entry.get("title") or Path(path).stem
+            title = entry.get("title") or _share_title_for_path(path, st)
             items.append(
                 {
                     "token": token,
@@ -502,17 +543,15 @@ def rewrite_share_paths(from_path: str, to_path: str) -> int:
             path = (entry.get("path") or "").replace("\\", "/").lstrip("/")
             if path == cleaned_from:
                 entry["path"] = cleaned_to
-                if share_entry_type(entry) == "folder":
-                    entry["title"] = Path(cleaned_to).name
-                else:
-                    entry["title"] = Path(cleaned_to).stem
+                entry["title"] = _share_title_for_path(
+                    cleaned_to, share_entry_type(entry)
+                )
                 updated += 1
             elif path.startswith(cleaned_from + "/"):
                 entry["path"] = cleaned_to + path[len(cleaned_from) :]
-                if share_entry_type(entry) == "folder":
-                    entry["title"] = Path(entry["path"]).name
-                else:
-                    entry["title"] = Path(entry["path"]).stem
+                entry["title"] = _share_title_for_path(
+                    entry["path"], share_entry_type(entry)
+                )
                 updated += 1
         if updated:
             _save(data)
@@ -595,32 +634,36 @@ def _same_or_under_share(path: str, root_key: str) -> bool:
     return bool(root_key) and (target == root_key or target.startswith(root_key + "/"))
 
 
+def readable_vault_path(rel_path: str) -> Optional[str]:
+    """Vault-relative spelling that can actually be read.
+
+    Hangul folders from macOS are often NFD while a later filename is NFC.
+    Whole-path NFC and whole-path NFD both miss that key. Return the stored
+    path, preferring the newest file when both spellings exist.
+    """
+    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    if not cleaned or ".." in cleaned.split("/"):
+        return None
+    located = vault_backend.locate_vault_file(cleaned)
+    if located is not None and located.is_file():
+        root = vault_backend.vault_root().resolve()
+        try:
+            return located.resolve().relative_to(root).as_posix()
+        except ValueError:
+            pass
+    from application import vault_sync
+
+    return vault_sync.resolve_remote_rel(cleaned)
+
+
 def vault_object_exists(rel_path: str) -> bool:
     """True if file exists on local vault or as an S3 object.
 
-    Tries both Unicode spellings. A Korean folder stored as NFD must not look
-    missing when the share path is NFC, or the share link is revoked.
+    Tries both Unicode spellings, including mixed NFC/NFD segments. A Korean
+    folder stored as NFD must not look missing when the share path is NFC, or
+    the share link is revoked.
     """
-    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
-    if not cleaned:
-        return False
-    spellings = []
-    for form in (
-        cleaned,
-        unicodedata.normalize("NFC", cleaned),
-        unicodedata.normalize("NFD", cleaned),
-    ):
-        if form and form not in spellings:
-            spellings.append(form)
-    for form in spellings:
-        try:
-            if vault_backend.resolve_vault_path(form).is_file():
-                return True
-        except ValueError:
-            continue
-    from application import vault_sync
-
-    return vault_sync.remote_file_exists(cleaned)
+    return readable_vault_path(rel_path) is not None
 
 
 def vault_folder_exists(rel_path: str) -> bool:
@@ -794,38 +837,13 @@ def delete_vault_tree_from_s3(rel_path: str) -> int:
     return deleted
 
 
-def read_vault_text(rel_path: str) -> Optional[str]:
-    """Read note text: local vault first, then S3 (mount lag / API-upload gap)."""
-    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
-    try:
-        target = vault_backend.resolve_vault_path(cleaned)
-        if target.is_file():
-            return target.read_text(encoding="utf-8", errors="replace")
-    except ValueError:
-        pass
-    loc = _s3_object_key(cleaned)
-    if not loc:
+def _read_s3_rel(rel_path: str) -> Optional[bytes]:
+    from application import vault_sync
+
+    stored = vault_sync.resolve_remote_rel(rel_path)
+    if not stored:
         return None
-    bucket, region, key = loc
-    try:
-        import boto3
-
-        obj = boto3.client("s3", region_name=region).get_object(Bucket=bucket, Key=key)
-        return obj["Body"].read().decode("utf-8", errors="replace")
-    except Exception:
-        return None
-
-
-def read_vault_bytes(rel_path: str) -> Optional[bytes]:
-    """Read binary vault object: local first, then S3."""
-    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
-    try:
-        target = vault_backend.resolve_vault_path(cleaned)
-        if target.is_file():
-            return target.read_bytes()
-    except ValueError:
-        pass
-    loc = _s3_object_key(cleaned)
+    loc = _s3_object_key(stored)
     if not loc:
         return None
     bucket, region, key = loc
@@ -836,6 +854,27 @@ def read_vault_bytes(rel_path: str) -> Optional[bytes]:
         return obj["Body"].read()
     except Exception:
         return None
+
+
+def read_vault_text(rel_path: str) -> Optional[str]:
+    """Read note text: local vault first, then S3 (mount lag / API-upload gap)."""
+    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    located = vault_backend.locate_vault_file(cleaned)
+    if located is not None and located.is_file():
+        return located.read_text(encoding="utf-8", errors="replace")
+    data = _read_s3_rel(cleaned)
+    if data is None:
+        return None
+    return data.decode("utf-8", errors="replace")
+
+
+def read_vault_bytes(rel_path: str) -> Optional[bytes]:
+    """Read binary vault object: local first, then S3."""
+    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    located = vault_backend.locate_vault_file(cleaned)
+    if located is not None and located.is_file():
+        return located.read_bytes()
+    return _read_s3_rel(cleaned)
 
 
 def _is_passthrough_asset(inner: str) -> bool:
@@ -1192,8 +1231,9 @@ def folder_share_allowed_paths(
             cleaned = resolved.replace("\\", "/").lstrip("/")
             if not cleaned or ".." in cleaned.split("/"):
                 continue
-            if vault_object_exists(cleaned):
-                allowed.add(cleaned)
+            readable = readable_vault_path(cleaned)
+            if readable:
+                allowed.add(readable)
     return allowed
 
 
@@ -1207,7 +1247,7 @@ def is_share_path_allowed(
         return False
     if allowed_paths is None:
         return vault_object_exists(cleaned)
-    return cleaned in allowed_paths
+    return _same_allowed_path(cleaned, allowed_paths)
 
 
 def resolve_folder_share_link_target(
@@ -1420,13 +1460,12 @@ def note_share_allowed_paths(root_path: str, root_text: str) -> set[str]:
             resolved = vault_index.resolve_link(target, from_path=root or None)
         except Exception:
             resolved = None
-        if not resolved:
+        readable = readable_vault_path(resolved) if resolved else None
+        if not readable:
+            readable = readable_vault_path(target)
+        if not readable or ".." in readable.split("/"):
             continue
-        cleaned = resolved.replace("\\", "/").lstrip("/")
-        if ".." in cleaned.split("/"):
-            continue
-        if vault_object_exists(cleaned):
-            allowed.add(cleaned)
+        allowed.add(readable)
     return allowed
 
 
@@ -1465,8 +1504,8 @@ def resolve_note_share_wiki_target(
     if not resolved:
         return None
     cleaned = resolved.replace("\\", "/").lstrip("/")
-    if cleaned in allowed_paths:
-        return cleaned
+    if _same_allowed_path(cleaned, allowed_paths):
+        return _canonical_allowed_path(cleaned, allowed_paths) or cleaned
     return None
 
 
@@ -1572,6 +1611,26 @@ def prepare_note_share_markdown(
     return out
 
 
+def _same_allowed_path(rel_path: str, allowed_paths: set[str]) -> bool:
+    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    if cleaned in allowed_paths:
+        return True
+    key = unicodedata.normalize("NFC", cleaned)
+    return any(unicodedata.normalize("NFC", path) == key for path in allowed_paths)
+
+
+def _canonical_allowed_path(rel_path: str, allowed_paths: set[str]) -> Optional[str]:
+    """Stored allowed spelling for ``rel_path`` (NFC-equivalent match)."""
+    cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    if cleaned in allowed_paths:
+        return cleaned
+    key = unicodedata.normalize("NFC", cleaned)
+    for path in allowed_paths:
+        if unicodedata.normalize("NFC", path) == key:
+            return path
+    return None
+
+
 def is_path_in_note_share_allowed(rel_path: str, allowed_paths: set[str]) -> bool:
     cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
-    return cleaned in allowed_paths
+    return _same_allowed_path(cleaned, allowed_paths)

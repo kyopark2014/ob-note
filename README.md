@@ -108,7 +108,7 @@ data/
 | POST | `/api/files/append` | 노트 이어쓰기 |
 | POST | `/api/files/sync` | pending flush 후 S3→로컬 incremental pull |
 | GET | `/api/files/sync` | pending 큐 상태 |
-| POST | `/api/files/share` | 노트·폴더 public 공유 링크 생성/재사용 |
+| POST | `/api/files/share` | 노트·파일·폴더 public 공유 링크 생성/재사용 |
 | GET | `/api/files/shares` | 공유 목록 |
 | POST | `/api/files/share/delete` | 공유 토큰 삭제 |
 | GET | `/s/{token}` | **공개** markdown viewer (쿠키 불필요) |
@@ -421,12 +421,14 @@ https://vault.my-agentic-ai.click/?note=Meeting/Sprint-Review.md
 
 ## 노트의 public 공유
 
-로그인된 사용자가 markdown 노트 또는 **폴더**를 **쿠키 없이** 볼 수 있는 CloudFront URL로 공유합니다. 서버가 HTML viewer를 렌더합니다.
+로그인된 사용자가 markdown 노트, **첨부 파일**(PDF/PPT/Excel/ZIP 등), 또는 **폴더**를 **쿠키 없이** 볼 수 있는 CloudFront URL로 공유합니다. 노트·폴더는 HTML viewer, 파일은 브라우저에서 열리거나 다운로드됩니다.
+
+노트 폴더에는 이미지·동영상뿐 아니라 **PDF / PPT / Excel / ZIP** 을 드래그앤드롭으로 넣을 수 있습니다 (최대 15MB).
 
 **UI**
 
-1. 노트 또는 폴더 우클릭 → **Share public link** → 새 탭에서 공개 페이지 오픈
-2. Settings → **Shared List** → 제목 · 종류(Note/Folder) · 공유 시각 · URL 목록, **Link**(열기) / **삭제**
+1. 노트·파일·폴더 우클릭 → **Share public link** → 새 탭에서 공개 페이지 오픈
+2. Settings → **Shared List** → 제목 · 종류(Note/File/Folder) · 공유 시각 · URL 목록, **Link**(열기) / **삭제**
 3. Settings → **Share permission** → 폴더 공유 위키 범위: Current / 1-hop(기본) / Shared folder / Entire vault
 
 **폴더 공유**
@@ -449,7 +451,7 @@ https://vault.my-agentic-ai.click/?note=Meeting/Sprint-Review.md
 **URL 형식** (`config.json`의 `sharing_url`)
 
 ```text
-https://vault.my-agentic-ai.click/s/{token}              # 노트 viewer 또는 폴더 인덱스
+https://vault.my-agentic-ai.click/s/{token}              # 노트 viewer · 파일 · 폴더 인덱스
 https://vault.my-agentic-ai.click/s/{token}/n/{Note.md}  # 폴더 공유 안의 직속 노트
 ```
 
@@ -457,8 +459,9 @@ https://vault.my-agentic-ai.click/s/{token}/n/{Note.md}  # 폴더 공유 안의 
 
 ```text
 POST /api/files/share  { "path": "folder/Note.md" }   # 노트
+POST /api/files/share  { "path": "folder/deck.pdf" }  # 파일 (pdf/ppt/xls/zip…)
 POST /api/files/share  { "path": "folder" }           # 폴더
-  → {user}/.vault/shares.json 에 token 등록 (type: note|folder)
+  → {user}/.vault/shares.json 에 token 등록 (type: note|file|folder)
   → vault/_public/shares_index.json 에 token → user_id 등록
   → { url, url_path, token, title, type, created_at } 반환
 
@@ -473,6 +476,7 @@ PUT  /api/files/share/permission  { "permission": "one_hop" }
 GET /s/{token}
   → _public/shares_index.json 에서 token → user_id + path (+ type)
   → type=note  : vault .md → HTML viewer
+  → type=file  : PDF는 인라인, 그 외는 다운로드
   → type=folder: 직속 .md 목록 → 인덱스 HTML
 
 GET /s/{token}/n/{Note.md}   # folder share only

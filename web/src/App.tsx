@@ -92,6 +92,7 @@ import {
 import {
   getShowImages,
   isCompanionMediaFileName,
+  isDocumentFileName,
   isImageFileName,
   isVideoFileName,
   setShowImages as persistShowImages,
@@ -217,6 +218,32 @@ function extractH1(md: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+/** Rewrite first ATX H1 to ``title`` (frontmatter kept). Prepend when missing. */
+function replaceOrSetH1(md: string, title: string): string {
+  const safe = title.trim() || "Untitled";
+  let prefix = "";
+  let body = md;
+  if (body.startsWith("---\n") || body.startsWith("---\r\n")) {
+    const end = body.indexOf("\n---", 3);
+    if (end >= 0) {
+      const after = body.indexOf("\n", end + 4);
+      if (after < 0) return md;
+      prefix = body.slice(0, after + 1);
+      body = body.slice(after + 1);
+    }
+  }
+  const m = body.match(/^#\s+(.+?)\s*$/m);
+  if (m && m.index != null) {
+    // JS ``\s*$`` can swallow blank lines after the heading; stop at EOL.
+    const start = m.index;
+    const nl = body.indexOf("\n", start);
+    const end = nl >= 0 ? nl : body.length;
+    return prefix + body.slice(0, start) + `# ${safe}` + body.slice(end);
+  }
+  const rest = body.replace(/^\n+/, "");
+  return rest ? `${prefix}# ${safe}\n\n${rest}` : `${prefix}# ${safe}\n\n`;
+}
+
 function sanitizeFilename(title: string): string {
   const cleaned = title
     .replace(/[\\/:*?"<>|#]/g, "")
@@ -224,6 +251,11 @@ function sanitizeFilename(title: string): string {
     .trim()
     .slice(0, 120);
   return cleaned || "Untitled";
+}
+
+/** Default new-note stems that may still follow an H1 → filename retitle. */
+function isUntitledStem(stem: string): boolean {
+  return /^Untitled(?: \d+)?$/.test(stem);
 }
 
 function uniqueNamedPath(
@@ -428,6 +460,35 @@ function isVideoUpload(file: File): boolean {
 
 function isMarkdownFileName(name: string): boolean {
   return /\.(md|markdown)$/i.test(name);
+}
+
+/** Accept list matching uploadFilesToFolder (images, video, docs, markdown). */
+const FOLDER_UPLOAD_ACCEPT =
+  "image/*,video/mp4,video/webm,video/x-m4v,.mp4,.webm,.m4v,.md,.markdown,.pdf,.ppt,.pptx,.xls,.xlsx,.zip,.doc,.docx";
+
+function pickFolderUploadFiles(): Promise<File[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.accept = FOLDER_UPLOAD_ACCEPT;
+    let settled = false;
+    const finish = (files: File[]) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("focus", onFocus);
+      resolve(files);
+    };
+    const onFocus = () => {
+      // Cancel leaves no change event; settle empty after the dialog closes.
+      window.setTimeout(() => finish([]), 300);
+    };
+    input.addEventListener("change", () => {
+      finish(Array.from(input.files ?? []));
+    });
+    window.addEventListener("focus", onFocus);
+    input.click();
+  });
 }
 
 /** Finder/Explorer copy → paste exposes the file on clipboardData. */
@@ -819,8 +880,13 @@ export default function App() {
         await prev;
         // Follow any rename that finished while we waited (stale Old.md → New.md).
         const startPath = resolveLatestPath(path);
-        // Server moves the existing note row (Untitled → H1) and deletes the old file.
-        const written = await api.writeFile(startPath, content, { syncFilename: true });
+        const startStem =
+          startPath.split("/").pop()?.replace(/\.md$/i, "") || "";
+        // Only Untitled* may follow H1. After a tree rename (Memo.md), keep the path.
+        const allowRetitle = isUntitledStem(startStem);
+        const written = await api.writeFile(startPath, content, {
+          syncFilename: allowRetitle,
+        });
         const live = written.path || startPath;
         if (live !== startPath) {
           renamedFromRef.current.set(startPath, live);
@@ -833,6 +899,7 @@ export default function App() {
           }
           return live;
         }
+        if (!allowRetitle) return live;
         const parts = live.split("/");
         const parent = parts.slice(0, -1).join("/");
         const currentStem = parts[parts.length - 1]?.replace(/\.md$/i, "") || "";
@@ -1286,6 +1353,11 @@ export default function App() {
       const isMd = /\.md$/i.test(path);
       const isImage = isImageFileName(path);
       const isVideo = isVideoFileName(path);
+      // PDF/Office/zip: open authenticated viewer in a new tab (not the note pane).
+      if (isDocumentFileName(path)) {
+        window.open(api.viewUrl(path), "_blank", "noopener,noreferrer");
+        return true;
+      }
       // Notes, images, and videos open in the main pane; other binaries stay drag/move-only.
       if (!isMd && !isImage && !isVideo) return false;
       const currentPath = activePathRef.current;
@@ -2113,6 +2185,11 @@ export default function App() {
           }
           return n;
         });
+      const isMdFile = /\.md$/i.test(path);
+      const stem = safe.replace(/\.md$/i, "");
+      // Keep unsaved draft across rename; server syncs H1 on disk for other notes.
+      const pendingDraft =
+        isMdFile && activePath === path ? draftRef.current : null;
       try {
         await api.rename(path, to);
         renamedFromRef.current.set(path, to);
@@ -2145,6 +2222,12 @@ export default function App() {
           writeLastNotePath(nextActive);
           if (activePath === path && /\.md$/i.test(nextActive)) {
             try {
+              // Prefer local draft (may be dirty) and force H1 ↔ filename.
+              const base = pendingDraft ?? (await api.readFile(nextActive)).content;
+              const synced = replaceOrSetH1(base, stem);
+              if (synced !== base || pendingDraft != null) {
+                await api.writeFile(nextActive, synced);
+              }
               const payload = await api.readFile(nextActive);
               setFile(payload);
               setDraft(payload.content);
@@ -2180,8 +2263,12 @@ export default function App() {
 
   const movePath = useCallback(
     async (fromPath: string, toParentPath: string) => {
-      const base = fromPath.split("/").pop() || fromPath;
-      const to = toParentPath ? `${toParentPath}/${base}` : base;
+      const from = fromPath.normalize("NFC");
+      const parent = toParentPath.normalize("NFC");
+      const base = from.split("/").pop() || from;
+      const to = parent ? `${parent}/${base}` : base;
+      fromPath = from;
+      toParentPath = parent;
       if (to === fromPath) return;
       const fromParent = fromPath.includes("/")
         ? fromPath.slice(0, fromPath.lastIndexOf("/"))
@@ -2329,12 +2416,26 @@ export default function App() {
 
   const uploadFilesToFolder = useCallback(
     async (parentPath: string, files: File[]) => {
+      const parent = parentPath.normalize("NFC");
       const images = files.filter(
         (f) => f.type.startsWith("image/") || isImageFileName(f.name),
       );
-      const videos = files.filter((f) => isVideoUpload(f) && !isImageFileName(f.name));
-      if (!images.length && !videos.length) {
-        void showAlert("이미지 또는 mp4 동영상만 폴더로 끌어다 놓을 수 있습니다.", "Upload");
+      const videos = files.filter(
+        (f) => isVideoUpload(f) && !isImageFileName(f.name) && !isMarkdownFileName(f.name),
+      );
+      const documents = files.filter(
+        (f) =>
+          isDocumentFileName(f.name) &&
+          !isImageFileName(f.name) &&
+          !isMarkdownFileName(f.name) &&
+          !isVideoUpload(f),
+      );
+      const markdown = files.filter((f) => isMarkdownFileName(f.name));
+      if (!images.length && !videos.length && !documents.length && !markdown.length) {
+        void showAlert(
+          "이미지, mp4, PDF/PPT/Excel/ZIP, Markdown 파일만 업로드할 수 있습니다.",
+          "Upload",
+        );
         return;
       }
       try {
@@ -2343,17 +2444,29 @@ export default function App() {
           const ext =
             extFromImageMime(file.type) ||
             (file.name.includes(".") ? file.name.split(".").pop()!.toLowerCase() : "png");
-          const vaultPath = uniqueImagePath(parentPath, ext, treeRef.current);
+          const vaultPath = uniqueImagePath(parent, ext, treeRef.current);
           taken.add(vaultPath);
           const fileName = vaultPath.split("/").pop() || file.name;
           await api.uploadFile(vaultPath, file, fileName);
         }
         for (const file of videos) {
-          const vaultPath = allocateUploadPath(parentPath, file.name, taken);
+          const vaultPath = allocateUploadPath(parent, file.name, taken);
           const fileName = vaultPath.split("/").pop() || file.name;
           await api.uploadFile(vaultPath, file, fileName);
         }
-        if (!showImages) {
+        for (const file of documents) {
+          const vaultPath = allocateUploadPath(parent, file.name, taken);
+          const fileName = vaultPath.split("/").pop() || file.name;
+          await api.uploadFile(vaultPath, file, fileName);
+        }
+        for (const file of markdown) {
+          const text = await file.text();
+          const vaultPath = allocateUploadPath(parent, file.name, taken);
+          await api.writeFile(vaultPath, text);
+          ensureAncestorsOpen(vaultPath);
+        }
+        if (parent) setFolderOpen(parent, true);
+        if ((images.length || videos.length) && !showImages) {
           persistShowImages(true);
           setShowImages(true);
         }
@@ -2522,6 +2635,10 @@ export default function App() {
   const onFileMenuAction = useCallback(
     async (action: FileMenuAction, path: string) => {
       if (action === "open-tab") {
+        if (isDocumentFileName(path)) {
+          window.open(api.viewUrl(path), "_blank", "noopener,noreferrer");
+          return;
+        }
         await openFile(path);
         return;
       }
@@ -2536,8 +2653,11 @@ export default function App() {
         return;
       }
       if (action === "share") {
-        if (!/\.md$/i.test(path)) {
-          void showAlert("Markdown 노트만 공개 링크로 공유할 수 있습니다.", "Share");
+        if (!/\.md$/i.test(path) && !isDocumentFileName(path)) {
+          void showAlert(
+            "Markdown 노트 또는 PDF/PPT/Excel/ZIP 파일만 공개 링크로 공유할 수 있습니다.",
+            "Share",
+          );
           return;
         }
         try {
@@ -2810,6 +2930,11 @@ export default function App() {
         startCreateFolder(path);
         return;
       }
+      if (action === "files") {
+        const files = await pickFolderUploadFiles();
+        if (files.length) await uploadFilesToFolder(path, files);
+        return;
+      }
       if (action === "pin") {
         updatePinnedPaths(togglePinnedPath(path, pinnedPaths));
         return;
@@ -2893,6 +3018,7 @@ export default function App() {
       startCompress,
       startCreateFolder,
       updatePinnedPaths,
+      uploadFilesToFolder,
     ],
   );
 

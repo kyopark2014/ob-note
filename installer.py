@@ -1250,7 +1250,32 @@ def _uses_cloudfront(sharing_url: str, alb_dns: str) -> bool:
     return parsed.scheme == "https"
 
 
-def main() -> int:
+def deploy_use_vault_mcp() -> int:
+    """Deploy / update the use-vault MCP AgentCore Runtime (same as ``python create_mcp.py``)."""
+    import create_mcp
+
+    logger.info("[use-vault] Deploy MCP/use-vault AgentCore Runtime")
+    return create_mcp.main([])
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Deploy ob-note (ECS) and the use-vault MCP runtime")
+    parser.add_argument(
+        "--skip-use-vault",
+        action="store_true",
+        help="Skip the use-vault MCP AgentCore Runtime deploy (ob-note web app only).",
+    )
+    parser.add_argument(
+        "--use-vault-only",
+        action="store_true",
+        help="Deploy only the use-vault MCP runtime (equivalent to python create_mcp.py).",
+    )
+    args = parser.parse_args(argv)
+    if args.use_vault_only:
+        return deploy_use_vault_mcp()
+
     if shutil_which("docker") is None:
         logger.error("Docker is required")
         return 1
@@ -1405,6 +1430,13 @@ def main() -> int:
             "google_client_id is empty — set it in config.json for Google sign-in"
         )
     print(url)
+
+    if not args.skip_use_vault:
+        # Same config.json (sharing_url etc. were just saved above).
+        rc = deploy_use_vault_mcp()
+        if rc != 0:
+            logger.error("use-vault MCP deploy failed (exit %s); retry: python installer.py --use-vault-only", rc)
+            return rc
     return 0
 
 

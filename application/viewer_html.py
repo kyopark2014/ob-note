@@ -340,6 +340,135 @@ def markdown_to_safe_html(text: str) -> str:
     return promote_video_embeds(add_heading_ids(body))
 
 
+_WIKI_ANY_RE = re.compile(r"(!)?\[\[([^\]|]*?)(?:\|([^\]]+))?\]\]")
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp"}
+
+
+def _rewrite_wiki_for_mcp_preview(text: str) -> str:
+    """Turn Obsidian wiki links into markdown the public viewer pipeline understands."""
+
+    def repl(match: re.Match[str]) -> str:
+        embed = bool(match.group(1))
+        raw = (match.group(2) or "").strip()
+        alias = (match.group(3) or "").strip()
+        if not raw:
+            return match.group(0)
+        if raw.startswith("#"):
+            heading = raw[1:].strip()
+            label = alias or heading
+            slug = slugify_heading(heading)
+            return f"[{label}](#{slug})"
+        note = raw.split("#", 1)[0].strip()
+        label = alias or note
+        if embed:
+            suffix = Path(note).suffix.lower()
+            if suffix in _IMAGE_SUFFIXES or suffix in {".mp4", ".webm", ".m4v"}:
+                dest = f"<{note}>" if re.search(r"[\s()]", note) else note
+                return f"![{label}]({dest})"
+            return f"*(embed: {label})*"
+        # Cross-note: MCP App resolves via data-wiki after HTML render.
+        return f"[{label}](wiki:{note})"
+
+    return _WIKI_ANY_RE.sub(repl, text or "")
+
+
+def _rewrite_media_src_for_mcp(html_body: str) -> str:
+    """Mark relative media ``src`` so the MCP App can hydrate via vault_asset."""
+
+    def rewrite_tag(tag: str, *, video: bool) -> str:
+        src = _html_attr(tag, "src")
+        if not src:
+            return tag
+        cleaned = src.strip()
+        if (
+            cleaned.startswith("http://")
+            or cleaned.startswith("https://")
+            or cleaned.startswith("data:")
+            or cleaned.startswith("blob:")
+            or cleaned.startswith("/")
+            or cleaned.startswith("#")
+        ):
+            return tag
+        # Drop src so the browser does not request a broken relative URL.
+        without_src = re.sub(
+            r"""\ssrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""",
+            "",
+            tag,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        attr = f' data-vault-src="{html.escape(cleaned, quote=True)}"'
+        if video:
+            if without_src.endswith("/>"):
+                return without_src[:-2] + attr + " />"
+            if without_src.endswith(">"):
+                return without_src[:-1] + attr + ">"
+            return without_src + attr
+        # <img ...>
+        if without_src.endswith("/>"):
+            return without_src[:-2] + attr + " />"
+        if without_src.endswith(">"):
+            return without_src[:-1] + attr + ">"
+        return without_src + attr
+
+    out = re.sub(
+        r"<img\b[^>]*>",
+        lambda m: rewrite_tag(m.group(0), video=False),
+        html_body or "",
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(
+        r"<video\b[^>]*>",
+        lambda m: rewrite_tag(m.group(0), video=True),
+        out,
+        flags=re.IGNORECASE,
+    )
+    # Convert wiki:Note hrefs to data-wiki for the MCP App click handler.
+    out = re.sub(
+        r'<a\b([^>]*?)href="wiki:([^"]+)"([^>]*)>',
+        lambda m: (
+            f'<a{m.group(1)}href="#"'
+            f' data-wiki="{html.escape(unquote(m.group(2)), quote=True)}"'
+            f"{m.group(3)}>"
+        ),
+        out,
+        flags=re.IGNORECASE,
+    )
+    return out
+
+
+def build_mcp_note_html(
+    text: str,
+    *,
+    note_path: str = "",
+    url_for_asset: "Callable[[str, str], str] | None" = None,
+) -> str:
+    """Same rendering pipeline as public ``/s/{token}`` share pages, for MCP Apps.
+
+    With ``note_path`` + ``url_for_asset(doc, rel)`` relative images/videos get the same
+    rewrite as a public share, but each URL comes from ``url_for_asset`` (a short-lived
+    signed link) so the iframe loads them directly from ob-note. Without them, relative
+    media falls back to ``data-vault-src`` (hydrated through the vault_asset tool).
+    """
+    from urllib.parse import unquote
+
+    prepared = _rewrite_wiki_for_mcp_preview(text or "")
+    if note_path and url_for_asset is not None:
+        from application import vault_share
+
+        sentinel = "__mcp_preview__"
+        prepared = vault_share.rewrite_md_assets_for_note_share(
+            prepared, sentinel, doc_path=note_path
+        )
+        prepared = re.sub(
+            rf"/s/{sentinel}/raw\?doc=([^&\s)>\"']+)&path=([^&\s)>\"']+)",
+            lambda m: url_for_asset(unquote(m.group(1)), unquote(m.group(2))),
+            prepared,
+        )
+    body = markdown_to_safe_html(prepared)
+    return _rewrite_media_src_for_mcp(body)
+
+
 _MARKDOWN_BODY_CSS = """
     .markdown-body {
       background: transparent;

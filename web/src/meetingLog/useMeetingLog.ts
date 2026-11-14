@@ -438,8 +438,8 @@ export function useMeetingLog(userId: string | null) {
 
     try {
       const wav = encodeWav(chunks);
-      const uploadUrl = `${apiUploadUrl}${apiUploadUrl.includes("?") ? "&" : "?"}userId=${encodeURIComponent(userId)}`;
-      const signedRes = await fetch(uploadUrl, { cache: "no-store" });
+      const uploadUrl = `${apiUploadUrl}?size=${wav.size}`;
+      const signedRes = await fetch(uploadUrl, { cache: "no-store", credentials: "same-origin" });
       const signed = (await signedRes.json().catch(() => ({}))) as {
         uploadUrl?: string;
         key?: string;
@@ -461,8 +461,9 @@ export function useMeetingLog(userId: string | null) {
       setStatus("배치 Transcribe 작업을 시작하는 중…");
       const startedRes = await fetch(apiBatchUrl, {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: signed.key, userId }),
+        body: JSON.stringify({ key: signed.key }),
       });
       const started = (await startedRes.json().catch(() => ({}))) as {
         jobName?: string;
@@ -479,7 +480,7 @@ export function useMeetingLog(userId: string | null) {
       let result = started;
       for (let i = 0; i < 60; i += 1) {
         setStatus(`회의 내용 정리 중… (${i + 1}회 확인)`);
-        const poll = await fetch(jobUrl, { cache: "no-store" });
+        const poll = await fetch(jobUrl, { cache: "no-store", credentials: "same-origin" });
         result = (await poll.json().catch(() => ({}))) as typeof started;
         if (!poll.ok && !result.status) {
           throw new Error(
@@ -631,7 +632,7 @@ export function useMeetingLog(userId: string | null) {
     );
 
     try {
-      const res = await fetch(MEETING_LOG_CONFIG.apiStreamUrl, { cache: "no-store" });
+      const res = await fetch(MEETING_LOG_CONFIG.apiStreamUrl, { cache: "no-store", credentials: "same-origin" });
       const data = (await res.json().catch(() => ({}))) as {
         url?: string;
         detail?: string;

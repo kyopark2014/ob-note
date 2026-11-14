@@ -220,6 +220,68 @@ def resolve_vault_path(rel: str) -> Path:
     return target
 
 
+def _nfc_name(name: str) -> str:
+    return unicodedata.normalize("NFC", name or "")
+
+
+def locate_vault_file(rel: str) -> Optional[Path]:
+    """Find ``rel`` even when Hangul path segments mix NFC and NFD.
+
+    ``resolve_vault_path`` always composes the whole path, so a file stored as
+    an NFD folder plus an NFC filename is invisible to it. Walk each segment
+    and match on NFC. If both spellings exist, keep the newest file.
+    """
+    cleaned = (rel or "").replace("\\", "/").lstrip("/")
+    if not cleaned or ".." in cleaned.split("/"):
+        return None
+    root = vault_root().resolve()
+    parts = [part for part in cleaned.split("/") if part and part != "."]
+    if not parts:
+        return None
+
+    def matching(directory: Path, want: str, *, want_dir: bool) -> list[Path]:
+        if not directory.is_dir():
+            return []
+        key = _nfc_name(want)
+        found: list[Path] = []
+        try:
+            children = list(directory.iterdir())
+        except OSError:
+            return []
+        for child in children:
+            if _nfc_name(child.name) != key:
+                continue
+            if want_dir and child.is_dir():
+                found.append(child)
+            elif not want_dir and child.is_file():
+                found.append(child)
+        return found
+
+    frontier: list[Path] = [root]
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        nxt: list[Path] = []
+        for directory in frontier:
+            nxt.extend(matching(directory, part, want_dir=not last))
+        frontier = nxt
+        if not frontier:
+            return None
+    files = []
+    for path in frontier:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if root != resolved and root not in resolved.parents:
+            continue
+        if resolved.is_file():
+            files.append(resolved)
+    if not files:
+        return None
+    files.sort(key=lambda path: (path.stat().st_mtime, path.as_posix()), reverse=True)
+    return files[0]
+
+
 def retire_nfd_duplicate(rel: str) -> Optional[str]:
     """Remove a decomposed-Hangul file once the NFC spelling has been written.
 
@@ -247,6 +309,9 @@ def retire_nfd_duplicate(rel: str) -> Optional[str]:
 
 def find_vault_file(rel: str) -> Optional[Path]:
     """Resolve an existing file; fall back to unique basename match (Obsidian-style)."""
+    located = locate_vault_file(rel)
+    if located is not None:
+        return located
     try:
         target = resolve_vault_path(rel)
     except ValueError:

@@ -345,5 +345,51 @@ def api_request(
         raise RuntimeError(f"Failed to reach ob-note at {base}: {exc}") from exc
 
 
+def api_request_bytes(
+    method: str,
+    path: str,
+    *,
+    user_id: Optional[str] = None,
+    query: Optional[dict[str, Any]] = None,
+    timeout: float = 60.0,
+    max_bytes: int = 2 * 1024 * 1024,
+) -> tuple[bytes, str]:
+    """GET binary vault content (e.g. ``/api/files/raw``). Returns ``(body, content_type)``."""
+    uid = resolve_user_id(user_id)
+    base = vault_base_url()
+    url = f"{base}{path}"
+    if query:
+        filtered = {k: v for k, v in query.items() if v is not None and v != ""}
+        if filtered:
+            url = f"{url}?{urllib.parse.urlencode(filtered)}"
+
+    headers = _auth_headers(uid, require_auth=True)
+    headers["Accept"] = "*/*"
+    req = urllib.request.Request(url, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            ctype = (resp.headers.get("Content-Type") or "application/octet-stream").split(";")[0].strip()
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                block = resp.read(64 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                if total > max_bytes:
+                    raise RuntimeError(f"Asset too large (max {max_bytes} bytes)")
+                chunks.append(block)
+            return b"".join(chunks), ctype
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+        except Exception:
+            parsed = detail
+        raise RuntimeError(f"HTTP {exc.code} {method.upper()} {path}: {parsed}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to reach ob-note at {base}: {exc}") from exc
+
+
 def to_json(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)

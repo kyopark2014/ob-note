@@ -8,17 +8,16 @@ export type MeetingLogConfig = {
   apiBatchJobUrl: string;
 };
 
-const DEFAULT_API =
-  (import.meta.env.VITE_MEETING_LOG_API as string | undefined)?.replace(/\/$/, "") ||
-  "https://j2ezucz8ph.execute-api.us-west-2.amazonaws.com";
+// Same-origin, session-authenticated proxy (no public API Gateway).
+const API = "/api/meeting-log";
 
 export const MEETING_LOG_CONFIG: MeetingLogConfig = {
   projectName: "meeting-log",
-  apiGatewayUrl: DEFAULT_API,
-  apiStreamUrl: `${DEFAULT_API}/stream-url`,
-  apiUploadUrl: `${DEFAULT_API}/upload-url`,
-  apiBatchUrl: `${DEFAULT_API}/batch-transcribe`,
-  apiBatchJobUrl: `${DEFAULT_API}/batch-job`,
+  apiGatewayUrl: API,
+  apiStreamUrl: `${API}/stream-url`,
+  apiUploadUrl: `${API}/upload-url`,
+  apiBatchUrl: `${API}/batch-transcribe`,
+  apiBatchJobUrl: `${API}/batch-job`,
 };
 
 export const TARGET_SAMPLE_RATE = 16000;

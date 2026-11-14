@@ -1,6 +1,6 @@
 const AGENT_MODEL_KEY = "ob-note:agent-model";
 
-export const DEFAULT_AGENT_MODEL = "Claude 4.6 Sonnet";
+export const DEFAULT_AGENT_MODEL = "Claude 5.0 Sonnet";
 
 export function getAgentModel(): string {
   try {

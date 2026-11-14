@@ -63,21 +63,196 @@ body {
 .k-error { padding: 10px 12px; border-radius: var(--border-radius-md, 8px);
   background: var(--color-background-danger, light-dark(#f7ecec, #602a28));
   color: var(--color-text-danger, light-dark(#7f2c28, #ee8884)); }
-/* Rendered markdown */
-.k-md { overflow-wrap: anywhere; font-size: var(--font-text-md-size, 16px); line-height: 1.55; }
-.k-md h1, .k-md h2, .k-md h3, .k-md h4 { margin: 1.1em 0 .4em; line-height: 1.25; font-weight: var(--font-weight-semibold, 600); }
-.k-md h1 { font-size: var(--font-heading-xl-size, 24px); } .k-md h2 { font-size: var(--font-heading-lg-size, 20px); }
-.k-md h3, .k-md h4 { font-size: var(--font-heading-md-size, 16px); }
-.k-md p { margin: .5em 0; } .k-md ul, .k-md ol { margin: .5em 0; padding-left: 1.4em; }
-.k-md code { font-family: var(--font-mono, ui-monospace, monospace); font-size: .9em; padding: 1px 5px;
-  border-radius: var(--border-radius-xs, 4px); background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); }
-.k-md pre { margin: .6em 0; padding: 10px 12px; overflow-x: auto; border-radius: var(--border-radius-md, 8px);
-  background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); }
+/*
+ * Rendered markdown — tuned to match ob-note `.preview-pane` (web/src/styles/vault.css).
+ * Not loaded from ob-note at runtime; copied into this MCP App bundle at build time.
+ */
+.k-md {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--color-text-primary, light-dark(#0d0d0d, #ececec));
+}
+.k-md h1, .k-md h2, .k-md h3, .k-md h4, .k-md h5, .k-md h6 {
+  margin: 1.4em 0 .5em;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.k-md h1 {
+  font-size: 1.8rem;
+  border-bottom: 1px solid var(--color-border-tertiary, light-dark(#e2e2e8, #333));
+  padding-bottom: .3em;
+}
+.k-md h2 { font-size: 1.35rem; }
+.k-md h3 { font-size: 1.15rem; }
+.k-md h4, .k-md h5, .k-md h6 { font-size: 1.05rem; }
+.k-md p { margin: .7em 0; }
+.k-md ul, .k-md ol { margin: .6em 0; padding-left: 1.4em; }
+.k-md li { margin: .2em 0; }
+.k-md li > ul, .k-md li > ol { margin: .2em 0; }
+.k-md code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: .9em;
+  padding: .1em .35em;
+  border-radius: 3px;
+  background: var(--color-background-secondary, light-dark(#f0f0f3, #2a2a2a));
+}
+.k-md pre {
+  margin: .8em 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: var(--color-background-secondary, light-dark(#f0f0f3, #2a2a2a));
+}
 .k-md pre code { padding: 0; background: transparent; }
-.k-md blockquote { margin: .6em 0; padding-left: 12px; border-left: 3px solid var(--color-border-secondary, light-dark(rgba(31,30,29,.3), rgba(222,220,209,.3))); }
-.k-md hr { border: 0; border-top: var(--border-width-regular, .5px) solid var(--color-border-secondary, light-dark(rgba(31,30,29,.3), rgba(222,220,209,.3))); margin: 1em 0; }
-.k-md a { color: var(--color-text-info, light-dark(#3266ad, #80aadd)); text-decoration: underline; cursor: pointer; }
-.k-md .k-task { list-style: none; margin-left: -1.2em; }
+.k-md blockquote {
+  margin: 1em 0;
+  padding: .2em 0 .2em 1em;
+  border-left: 3px solid var(--color-text-info, light-dark(#4493f8, #58a6ff));
+  color: var(--color-text-secondary, light-dark(#8a8a93, #999));
+}
+.k-md blockquote p { margin: .35em 0; }
+.k-md hr {
+  border: 0;
+  border-top: 1px solid var(--color-border-tertiary, light-dark(#e2e2e8, #333));
+  margin: 1.4em 0;
+}
+.k-md a {
+  color: var(--color-text-info, light-dark(#4493f8, #58a6ff));
+  text-decoration: none;
+  cursor: pointer;
+}
+.k-md a:hover { text-decoration: underline; }
+.k-md del { color: var(--color-text-secondary, light-dark(#8a8a93, #999)); }
+.k-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: .6em 0;
+  display: block;
+}
+.k-md-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+.k-md table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: .95em;
+}
+.k-md th, .k-md td {
+  border: 1px solid var(--color-border-tertiary, light-dark(#e2e2e8, #333));
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.k-md th {
+  font-weight: 600;
+  background: var(--color-background-secondary, light-dark(#f7f7f9, #212121));
+}
+.k-md .k-task {
+  list-style: none;
+  margin-left: -1.2em;
+  display: flex;
+  align-items: flex-start;
+  gap: .45em;
+}
+.k-md .k-task input { margin-top: .35em; }
+
+/*
+ * Public share parity — same structure as application/viewer_html._MARKDOWN_BODY_CSS,
+ * remapped onto host style tokens so the MCP App matches /s/{token}.
+ */
+.markdown-body {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  background: transparent;
+  color: var(--color-text-primary, light-dark(#1f2328, #e6edf3));
+  line-height: 1.6;
+  font-size: 15px;
+}
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  margin: 1.2em 0 0.5em;
+  font-weight: 650;
+  border-bottom: 1px solid var(--color-border-tertiary, light-dark(#d0d7de, #30363d));
+  padding-bottom: 0.3em;
+  scroll-margin-top: 64px;
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: 1.8rem; }
+.markdown-body h2 { font-size: 1.35rem; }
+.markdown-body h3 { font-size: 1.15rem; }
+.markdown-body p { margin: 0.75em 0; }
+.markdown-body ul, .markdown-body ol { padding-left: 1.5em; margin: 0.6em 0; }
+.markdown-body li { margin: 0.2em 0; }
+.markdown-body img,
+.markdown-body video {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+.markdown-body video {
+  display: block;
+  margin: 0.6em 0;
+  background: #000;
+}
+.markdown-body code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 0.9em;
+  background: var(--color-background-secondary, light-dark(#f0f0f3, rgba(110, 118, 129, 0.2)));
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+.markdown-body pre {
+  overflow-x: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--color-background-secondary, light-dark(#f0f0f3, rgba(110, 118, 129, 0.15)));
+  border: 1px solid var(--color-border-tertiary, light-dark(#d0d7de, #30363d));
+  margin: 0.8em 0;
+}
+.markdown-body pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 14px;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid var(--color-border-tertiary, light-dark(#d0d7de, #30363d));
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body th {
+  font-weight: 600;
+  background: var(--color-background-secondary, light-dark(#f7f7f9, #212121));
+}
+.markdown-body a {
+  color: var(--color-text-info, light-dark(#4493f8, #58a6ff));
+  text-decoration: none;
+  cursor: pointer;
+}
+.markdown-body a[href^="#"] { text-decoration: none; }
+.markdown-body a:hover,
+.markdown-body a[href^="#"]:hover { text-decoration: underline; }
+.markdown-body blockquote {
+  margin: 0.75em 0;
+  padding: 0 1em;
+  border-left: 3px solid var(--color-border-tertiary, light-dark(#d0d7de, #30363d));
+  color: var(--color-text-secondary, light-dark(#656d76, #8b949e));
+}
+.markdown-body hr {
+  border: 0;
+  border-top: 1px solid var(--color-border-tertiary, light-dark(#d0d7de, #30363d));
+  margin: 1.4em 0;
+}
 
 .vv-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 2px 8px; min-height: 28px; }
 .vv-head .k-btn { min-height: 36px; padding: 0 10px; }
@@ -99,9 +274,88 @@ body {
   background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); color: var(--color-text-secondary, light-dark(#3d3d3a, #c2c0b6)); }
 /* Fullscreen explorer */
 .vv-fs { display: flex; flex-direction: column; gap: 8px; height: calc(100vh - 12px); }
+.vv-fs-focus {
+  align-items: stretch;
+  overflow: auto;
+  padding: 8px 12px 24px;
+}
 .vv-body { display: grid; grid-template-columns: minmax(220px, 290px) minmax(0, 1fr); gap: 12px; flex: 1; min-height: 0; }
 .vv-body.vv-compact { grid-template-columns: minmax(0, 1fr); }
 .vv-tree, .vv-reader { overflow: auto; min-height: 0; }
+.vv-head-actions { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; align-items: center; }
+.vv-head-stack {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+}
+.vv-head-actions-top {
+  width: 100%;
+  justify-content: flex-end;
+}
+/* ob-note-style Preview / Edit / Save toolbar (icon + label; always visible) */
+.vv-mode-toolbar {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-right: 4px;
+}
+.vv-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 10px;
+}
+.vv-mode-btn svg {
+  flex-shrink: 0;
+  display: block;
+}
+.vv-mode-btn.is-disabled {
+  cursor: default;
+}
+.vv-mode-btn.vv-mode-on {
+  color: var(--color-text-info, #4493f8);
+  border-color: var(--color-text-info, #4493f8);
+}
+.vv-dirty {
+  margin-left: 6px;
+  color: var(--color-text-info, light-dark(#4493f8, #58a6ff));
+  font-weight: 700;
+}
+.vv-editor-pane {
+  margin-top: 4px;
+  min-height: 240px;
+}
+.vv-editor {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  height: auto;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--color-text-primary, light-dark(#141413, #faf9f5));
+  field-sizing: content;
+}
+.vv-reader-focus {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 12px 8px 64px;
+  overflow: visible;
+}
+.vv-reader > .vv-head-stack h2 {
+  width: 100%;
+}
 .vv-filter { width: 100%; min-height: 40px; padding: 0 10px; margin-bottom: 6px; font: inherit; color: inherit;
   border: var(--border-width-regular, .5px) solid var(--color-border-primary, light-dark(rgba(31,30,29,.4), rgba(222,220,209,.4)));
   border-radius: var(--border-radius-md, 8px); background: var(--color-background-primary, light-dark(#fff, #30302e)); }
@@ -111,8 +365,17 @@ body {
   background: transparent; color: inherit; overflow-wrap: anywhere; }
 .vv-item:hover, .vv-item[aria-current="true"] { background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); }
 .vv-item[aria-current="true"] { font-weight: var(--font-weight-semibold, 600); }
-.vv-reader { padding: 0 6px 24px 2px; }
-.vv-reader h2 { margin: 0; font-size: var(--font-heading-lg-size, 20px); line-height: var(--font-heading-lg-line-height, 1.25); overflow-wrap: anywhere; }
+.vv-reader { padding: 4px 10px 48px 4px; max-width: 820px; }
+.vv-reader > .vv-head h2 {
+  margin: 0;
+  font-size: 1.8rem;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.vv-reader > .vv-facts { margin: 6px 0 4px; }
+.vv-reader > .k-md,
+.vv-reader > .markdown-body { margin-top: 4px; }
 .vv-back { margin-top: 18px; }
 .vv-back .vv-item { min-height: 44px; }
 .vv-graph { width: 100%; height: 100%; min-height: 320px; border: var(--border-width-regular, .5px) solid var(--color-border-tertiary, light-dark(rgba(31,30,29,.15), rgba(222,220,209,.15)));
@@ -241,52 +504,223 @@ const kit = (() => {
     return isNaN(d.getTime()) ? "" : d.toLocaleDateString("ko-KR", { year: "numeric", month: "short", day: "numeric" });
   }
 
+  /** Match ob-note `slugifyHeading` for in-document [[#Heading]] / TOC links. */
+  function slugifyHeading(text) {
+    return String(text || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^\p{L}\p{N}\p{M}-]/gu, "");
+  }
+
+  function splitTableCells(line) {
+    let s = String(line || "").trim();
+    if (s.startsWith("|")) s = s.slice(1);
+    if (s.endsWith("|")) s = s.slice(0, -1);
+    return s.split("|").map((c) => c.trim());
+  }
+
+  function isTableSeparator(line) {
+    const cells = splitTableCells(line);
+    if (cells.length < 2) return false;
+    return cells.every((c) => /^:?-{3,}:?$/.test(c));
+  }
+
+  function isTableRow(line) {
+    const t = String(line || "").trim();
+    if (!t || !t.includes("|")) return false;
+    if (isTableSeparator(t)) return false;
+    return /^\|.*\|$/.test(t) || /^[^|].*\|.*$/.test(t);
+  }
+
   /**
-   * Minimal, safe markdown -> HTML. Everything is escaped first; only a fixed set of
-   * constructs is turned back into markup, and links must be http(s). Note content is
-   * untrusted, so raw HTML in the source is shown as text, never executed.
+   * Safe markdown -> HTML approximating ob-note TipTap/GFM preview:
+   * headings, lists (nested/task), tables, blockquotes, code, images (http/s),
+   * wiki / heading links. Raw HTML in the source is never executed.
    */
   function renderMarkdown(src) {
     const lines = String(src == null ? "" : src).replace(/\r\n?/g, "\n").split("\n");
     const out = [];
-    let i = 0, listType = null;
-    const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+    let i = 0;
+    /** @type {{ type: string, depth: number }[]} */
+    const stack = [];
+
+    const closeTo = (depth) => {
+      while (stack.length && stack[stack.length - 1].depth >= depth) {
+        out.push(`</${stack.pop().type}>`);
+      }
+    };
+    const closeAll = () => closeTo(0);
+
+    const startsBlock = (line) =>
+      /^(#{1,6}\s|```|>|\s*[-*]\s|\s*\d+[.)]\s)/.test(line) ||
+      isTableRow(line) ||
+      isTableSeparator(line) ||
+      /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line);
+
     const inline = (t) => {
-      let s = esc(t);
-      s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
-      s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-      s = s.replace(/\[\[([^\]\n]+)\]\]/g, (_, name) => `<a data-wiki="${name}">${name}</a>`);
-      s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) => `<a data-href="${url}">${label}</a>`);
+      const slots = [];
+      const park = (html) => {
+        const key = `\u0000${slots.length}\u0000`;
+        slots.push(html);
+        return key;
+      };
+      let raw = String(t == null ? "" : t);
+      // Obsidian wiki image embed: ![[img.png]] / ![[img.png|alt]]
+      raw = raw.replace(/!\[\[([^\]|#\n]+?)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => {
+        const file = String(target || "").trim();
+        const alt = String(alias || file.split("/").pop() || "image").trim();
+        if (/^https?:\/\//i.test(file)) {
+          return park(`<img src="${esc(file)}" alt="${esc(alt)}" loading="lazy">`);
+        }
+        return park(`<img data-vault-src="${esc(file)}" alt="${esc(alt)}" loading="lazy">`);
+      });
+      // Markdown images: remote URL or vault-relative path (hydrated by the viewer).
+      raw = raw.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_, alt, url) => {
+        const src = String(url || "").trim().replace(/^<|>$/g, "");
+        if (/^https?:\/\//i.test(src) || /^data:/i.test(src)) {
+          return park(`<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy">`);
+        }
+        return park(`<img data-vault-src="${esc(src)}" alt="${esc(alt)}" loading="lazy">`);
+      });
+      raw = raw.replace(/\[\[([^\]\n]+?)(?:\|([^\]]+))?\]\]/g, (_, target, alias) => {
+        const dest = String(target || "").trim();
+        const label = String(alias || dest.replace(/^#/, "")).trim() || dest;
+        if (dest.startsWith("#")) {
+          const slug = slugifyHeading(dest.slice(1));
+          return park(`<a data-heading="${esc(slug)}">${esc(label)}</a>`);
+        }
+        return park(`<a data-wiki="${esc(dest)}">${esc(label)}</a>`);
+      });
+      // Markdown links: http(s), in-doc #anchors, and other non-empty destinations.
+      raw = raw.replace(/\[([^\]]+)\]\((<[^>\n]+>|[^)\s]+)(?:\s+"[^"]*")?\)/g, (_, label, dest) => {
+        let href = String(dest || "").trim().replace(/^<|>$/g, "");
+        if (!href) return park(esc(label));
+        if (/^https?:\/\//i.test(href)) {
+          return park(`<a data-href="${esc(href)}">${esc(label)}</a>`);
+        }
+        if (href.startsWith("#")) {
+          const slug = href.slice(1);
+          try { decodeURIComponent(slug); } catch (_) { /* keep raw */ }
+          return park(`<a data-heading="${esc(slug)}">${esc(label)}</a>`);
+        }
+        // Relative / path-like — open via host when absolute http was rewritten; otherwise show text.
+        return park(`<a data-href="${esc(href)}">${esc(label)}</a>`);
+      });
+      raw = raw.replace(/`([^`]+)`/g, (_, code) => park(`<code>${esc(code)}</code>`));
+      let s = esc(raw);
+      s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+      s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+      s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+      s = s.replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>");
+      s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => slots[Number(n)] || "");
       return s;
     };
+
     while (i < lines.length) {
       const line = lines[i];
       const fence = /^```(.*)$/.exec(line);
       if (fence) {
-        closeList(); const buf = []; i++;
+        closeAll();
+        const buf = [];
+        i++;
         while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
-        i++; out.push(`<pre><code>${esc(buf.join("\n"))}</code></pre>`); continue;
+        i++;
+        out.push(`<pre><code>${esc(buf.join("\n"))}</code></pre>`);
+        continue;
       }
-      const h = /^(#{1,4})\s+(.*)$/.exec(line);
-      if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); i++; continue; }
-      if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { closeList(); out.push("<hr>"); i++; continue; }
-      const task = /^\s*[-*]\s+\[( |x|X)\]\s+(.*)$/.exec(line);
-      const ul = /^\s*[-*]\s+(.*)$/.exec(line);
-      const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      const h = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (h) {
+        closeAll();
+        const level = Math.min(h[1].length, 6);
+        const title = h[2];
+        const id = slugifyHeading(title);
+        out.push(`<h${level} id="${esc(id)}">${inline(title)}</h${level}>`);
+        i++;
+        continue;
+      }
+      // GFM table: header row + separator + body rows
+      if (isTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+        closeAll();
+        const header = splitTableCells(line);
+        i += 2;
+        const body = [];
+        while (i < lines.length && isTableRow(lines[i])) {
+          body.push(splitTableCells(lines[i]));
+          i++;
+        }
+        const thead = `<thead><tr>${header.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead>`;
+        const tbody = body.length
+          ? `<tbody>${body
+              .map((row) => {
+                const cells = header.map((_, idx) => row[idx] ?? "");
+                return `<tr>${cells.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`;
+              })
+              .join("")}</tbody>`
+          : "";
+        out.push(`<div class="k-md-table-wrap"><table>${thead}${tbody}</table></div>`);
+        continue;
+      }
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        closeAll();
+        out.push("<hr>");
+        i++;
+        continue;
+      }
+      const task = /^(\s*)[-*]\s+\[( |x|X)\]\s+(.*)$/.exec(line);
+      const ul = /^(\s*)[-*]\s+(.*)$/.exec(line);
+      const ol = /^(\s*)\d+[.)]\s+(.*)$/.exec(line);
       if (task || ul || ol) {
+        const indent = (task || ul || ol)[1].replace(/\t/g, "  ").length;
+        const depth = Math.floor(indent / 2) + 1;
         const want = ol ? "ol" : "ul";
-        if (listType !== want) { closeList(); out.push(`<${want}>`); listType = want; }
-        if (task) out.push(`<li class="k-task"><input type="checkbox" disabled ${/x/i.test(task[1]) ? "checked" : ""}> ${inline(task[2])}</li>`);
-        else out.push(`<li>${inline((ul || ol)[1])}</li>`);
-        i++; continue;
+        closeTo(depth);
+        const top = stack[stack.length - 1];
+        if (!top || top.depth < depth || top.type !== want) {
+          out.push(`<${want}>`);
+          stack.push({ type: want, depth });
+        }
+        if (task) {
+          out.push(
+            `<li class="k-task"><input type="checkbox" disabled ${/x/i.test(task[2]) ? "checked" : ""}><span>${inline(task[3])}</span></li>`,
+          );
+        } else {
+          out.push(`<li>${inline((ul || ol)[2])}</li>`);
+        }
+        i++;
+        continue;
       }
-      if (/^>\s?/.test(line)) { closeList(); const buf = []; while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, "")); out.push(`<blockquote>${inline(buf.join(" "))}</blockquote>`); continue; }
-      if (!line.trim()) { closeList(); i++; continue; }
-      closeList(); const buf = [line]; i++;
-      while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|```|>|\s*[-*]\s|\s*\d+[.)]\s)/.test(lines[i])) buf.push(lines[i++]);
+      if (/^>\s?/.test(line)) {
+        closeAll();
+        const buf = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ""));
+        out.push(`<blockquote>${buf.map((b) => `<p>${inline(b)}</p>`).join("")}</blockquote>`);
+        continue;
+      }
+      if (!line.trim()) {
+        // GFM loose lists: blank lines inside a list must not restart <ol> (or every item shows "1.").
+        let j = i + 1;
+        while (j < lines.length && !lines[j].trim()) j++;
+        const next = j < lines.length ? lines[j] : "";
+        const nextList = /^(\s*)(?:[-*]|\d+[.)])\s+/.test(next);
+        if (stack.length && nextList) {
+          i++;
+          continue;
+        }
+        closeAll();
+        i++;
+        continue;
+      }
+      closeAll();
+      const buf = [line];
+      i++;
+      while (i < lines.length && lines[i].trim() && !startsBlock(lines[i])) {
+        buf.push(lines[i++]);
+      }
       out.push(`<p>${inline(buf.join(" "))}</p>`);
     }
-    closeList();
+    closeAll();
     return out.join("\n");
   }
 
@@ -300,10 +734,10 @@ const kit = (() => {
   return { esc, safeUrl, applyHost, skeleton, fmtDate, renderMarkdown, excerpt };
 })();
 
-// ob-note vault viewer (MCP App) for the read tools of the use-vault MCP server.
-// Claude MCP Apps design guidelines: inline carousel / card, fullscreen explorer, text entry
-// stays in chat (the only input here filters the tree you are already looking at), no menus,
-// host style tokens, skeleton loading, 44px targets.
+// ob-note vault viewer (MCP App) for use-vault: browse, preview, and edit notes.
+// Claude MCP Apps design guidelines: inline carousel / card, fullscreen explorer, no menus,
+// host style tokens, skeleton loading, 44px targets. Note editing mirrors ob-note's
+// Preview / Edit / Save toolbar (source markdown textarea + share-style HTML preview).
 const { App } = window.__ext;
 const root = document.getElementById("root");
 const MAX_INLINE = 8;
@@ -312,6 +746,12 @@ const app = new App(
   { name: "Vault viewer", version: "1.0.0" },
   { availableDisplayModes: ["inline", "fullscreen"] },
 );
+
+const ICONS = {
+  book: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 0-2 2V5z"/><path d="M8 7h8M8 11h8"/></svg>`,
+  edit: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`,
+  save: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/></svg>`,
+};
 
 const S = {
   ctx: {},
@@ -323,6 +763,16 @@ const S = {
   graph: null, graphLoading: false, graphError: null,
   filter: "",
   pane: "tree",         // compact fullscreen: "tree" | "reader"
+  fsMode: "explorer",   // fullscreen: "explorer" (tree+reader) | "focus" (reader only)
+  pendingPath: null,    // open this note once fullscreen is granted
+  pendingFocus: false,  // enter fullscreen as focus (열기) rather than explorer (전체 보기)
+  viewMode: "preview",  // "preview" | "edit" (ob-note toolbar)
+  draft: "",            // markdown being edited
+  savedContent: "",     // last loaded/saved content (dirty baseline)
+  dirty: false,
+  saving: false,
+  saveError: null,
+  previewLoading: false, // re-render via vault_render (server HTML)
 };
 
 // ---------------------------------------------------------------- data
@@ -342,6 +792,24 @@ const canFullscreen = () => (S.ctx.availableDisplayModes || []).includes("fullsc
 const kind = () => (S.result && S.result.kind) || "none";
 const stem = (p) => String(p || "").split("/").pop().replace(/\.[^.]+$/, "");
 const folder = (p) => { const i = String(p || "").lastIndexOf("/"); return i > 0 ? p.slice(0, i) : ""; };
+
+/** Resolve a markdown/wiki image path relative to the open note (ob-note semantics). */
+function resolveVaultAssetPath(notePath, src) {
+  let cleaned = String(src || "").replace(/\\/g, "/").trim();
+  try { cleaned = decodeURIComponent(cleaned); } catch (_) { /* keep raw */ }
+  cleaned = cleaned.replace(/^<|>$/g, "");
+  if (!cleaned) return "";
+  if (/^(https?:|data:|blob:)/i.test(cleaned) || cleaned.startsWith("/")) return cleaned;
+  const dir = notePath && notePath.includes("/") ? notePath.slice(0, notePath.lastIndexOf("/")) : "";
+  const parts = [...(dir ? dir.split("/") : []), ...cleaned.split("/")];
+  const out = [];
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") { out.pop(); continue; }
+    out.push(part);
+  }
+  return out.join("/");
+}
 
 async function call(name, args) {
   const res = await app.callServerTool({ name, arguments: { actor_id: actor(), ...args } });
@@ -372,12 +840,17 @@ const openBtn = (url, label) => (kit.safeUrl(url) ? `<button class="k-btn" data-
 function noteCard(n) {
   const title = n.title || stem(n.path);
   const meta = [folder(n.path) || "(루트)", n.updated_at ? kit.fmtDate(n.updated_at) : ""].filter(Boolean).join(" · ");
+  const snip = n.snippet || n.body_preview || "";
+  // Prefer in-app fullscreen reader; fall back to external ob-note link when path is missing.
+  const open = n.path
+    ? `<button class="k-btn" data-act="open-note" data-path="${kit.esc(n.path)}" aria-label="${kit.esc(title + " 전체 화면으로 열기")}">열기</button>`
+    : openBtn(n.url, title + " 열기");
   return `<article class="vv-card" role="listitem">
     <div class="vv-title">${kit.esc(title)}</div>
     <div class="k-caption k-faint">${kit.esc(meta)}</div>
-    ${n.snippet ? `<div class="vv-snip k-caption k-muted">${kit.esc(String(n.snippet).slice(0, 200))}</div>` : ""}
+    ${snip ? `<div class="vv-snip k-caption k-muted">${kit.esc(String(snip).slice(0, 200))}</div>` : ""}
     ${(n.tags || []).length ? `<div>${n.tags.slice(0, 3).map((t) => `<span class="vv-chip">${kit.esc(t)}</span>`).join(" ")}</div>` : ""}
-    ${openBtn(n.url, title + " 열기")}</article>`;
+    ${open}</article>`;
 }
 
 function carousel(label, list) {
@@ -391,12 +864,15 @@ function carousel(label, list) {
 function inlineNote(n) {
   const facts = [folder(n.path) || "(루트)", n.updated_at ? "수정 " + kit.fmtDate(n.updated_at) : "", n.word_count ? n.word_count + "단어" : "",
     (n.backlinks || []).length ? "백링크 " + n.backlinks.length : ""].filter(Boolean);
+  const fsBtn = n.path && canFullscreen()
+    ? `<button class="k-btn k-primary" data-act="open-note" data-path="${kit.esc(n.path)}">전체 화면으로 열기</button>`
+    : (canFullscreen() ? `<button class="k-btn k-primary" data-act="expand">전체 보기</button>` : "");
   return `<div class="vv-note">
     <div class="vv-title">${kit.esc(n.title || stem(n.path))}</div>
     <div class="vv-facts k-caption k-faint">${facts.map((f) => `<span>${kit.esc(f)}</span>`).join("")}</div>
     <div class="vv-excerpt k-muted">${kit.esc(kit.excerpt(n.content, 320))}</div>
-    <div class="vv-actions">${kit.safeUrl(n.url) ? `<button class="k-btn k-primary" data-act="open" data-url="${kit.esc(n.url)}">ob-note에서 열기</button>` : ""}
-      ${canFullscreen() ? `<button class="k-btn" data-act="expand">전체 보기</button>` : ""}</div></div>`;
+    <div class="vv-actions">${fsBtn}
+      ${kit.safeUrl(n.url) ? `<button class="k-btn" data-act="open" data-url="${kit.esc(n.url)}">ob-note에서 열기</button>` : ""}</div></div>`;
 }
 
 function countTree(nodes) {
@@ -445,28 +921,129 @@ function treePane() {
   const q = S.filter.trim().toLowerCase();
   const body = treeHtml(S.tree && S.tree.children, q);
   return `<div class="vv-tree"><input class="vv-filter" data-act="filter" type="search" placeholder="제목 필터" value="${kit.esc(S.filter)}" aria-label="트리에서 노트 필터">
-    ${body || `<div class="k-empty k-muted">노트가 없습니다.</div>`}</div>`;
+    <div data-role="tree-list">${body || `<div class="k-empty k-muted">노트가 없습니다.</div>`}</div></div>`;
 }
 
-// Vault notes always start with "# Title" (house rule); the reader header already shows it.
-function withoutTitle(n) {
-  const body = String(n.content || "");
-  const m = /^\s*#\s+(.+?)\s*\n/.exec(body);
-  return m && m[1].trim() === String(n.title || stem(n.path)).trim() ? body.slice(m[0].length) : body;
+function decodeHtmlEntities(s) {
+  return String(s || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
 }
 
-function readerPane() {
-  if (S.noteLoading) return `<div class="vv-reader" aria-busy="true">${kit.skeleton(1, 28)}${kit.skeleton(5, 16)}</div>`;
-  if (S.noteError) return `<div class="vv-reader"><div class="k-error" role="alert">${kit.esc(S.noteError)}</div></div>`;
+function bindNote(n, { keepMode = false } = {}) {
+  S.note = n || null;
+  S.draft = String((n && n.content) || "");
+  S.savedContent = S.draft;
+  S.dirty = false;
+  S.saving = false;
+  S.saveError = null;
+  if (!keepMode) S.viewMode = "preview";
+}
+
+/**
+ * Note body uses ob-note's public-share HTML pipeline only (server ``content_html`` /
+ * ``vault_render``). The client kit markdown renderer is not used for the reader —
+ * TipTap/React cannot run inside this MCP App iframe.
+ */
+function noteBodyHtml(n) {
+  if (S.previewLoading) {
+    return `<div aria-busy="true">${kit.skeleton(5, 16)}</div>`;
+  }
+  const title = String(n.title || stem(n.path)).trim();
+  let html = typeof n.content_html === "string" ? n.content_html.trim() : "";
+  if (!html) {
+    return `<div class="k-empty k-muted">미리보기를 준비하지 못했습니다. Preview를 다시 눌러 주세요.</div>`;
+  }
+  html = html.replace(/^\s*<h1\b[^>]*>[\s\S]*?<\/h1>/i, (m) => {
+    const plain = decodeHtmlEntities(m.replace(/<[^>]+>/g, "")).trim();
+    return plain === title ? "" : m;
+  });
+  return `<article class="markdown-body">${html}</article>`;
+}
+
+/** Re-render draft/saved markdown via ob-note ``/api/files/render`` (share pipeline). */
+async function refreshPreviewHtml() {
+  if (!S.note) return;
+  const content = S.draft != null ? S.draft : String(S.note.content || "");
+  S.previewLoading = true;
+  try {
+    const data = await call("vault_render", {
+      content,
+      path: S.note.path || "",
+    });
+    if (data && typeof data.html === "string") {
+      S.note = { ...S.note, content_html: data.html, content };
+    }
+  } catch (e) {
+    S.saveError = e.message || "미리보기 렌더에 실패했습니다.";
+  } finally {
+    S.previewLoading = false;
+  }
+}
+
+function modeToolbar() {
+  const previewOn = S.viewMode === "preview";
+  const editOn = S.viewMode === "edit";
+  const canSave = S.dirty && !S.saving;
+  // Icon + short label (ob-note tooltips); labels stay visible even if SVG color tokens fail.
+  return `<div class="vv-mode-toolbar" role="toolbar" aria-label="Preview Edit Save">
+    <button type="button" class="k-btn vv-mode-btn${previewOn ? " vv-mode-on" : ""}" data-act="mode-preview" aria-label="Preview" aria-pressed="${previewOn}">${ICONS.book}<span>Preview</span></button>
+    <button type="button" class="k-btn vv-mode-btn${editOn ? " vv-mode-on" : ""}" data-act="mode-edit" aria-label="Edit" aria-pressed="${editOn}">${ICONS.edit}<span>Edit</span></button>
+    <button type="button" class="k-btn vv-mode-btn${canSave ? "" : " is-disabled"}" data-act="mode-save" aria-label="${S.saving ? "Saving" : "Save"}" aria-disabled="${canSave ? "false" : "true"}" style="opacity:${canSave ? "1" : "0.4"}">${ICONS.save}<span>${S.saving ? "Saving…" : "Save"}</span></button>
+  </div>`;
+}
+
+function updateSaveButton() {
+  const btn = root.querySelector("[data-act=mode-save]");
+  if (!btn) return;
+  const canSave = S.dirty && !S.saving;
+  btn.classList.toggle("is-disabled", !canSave);
+  btn.style.opacity = canSave ? "1" : "0.4";
+  btn.setAttribute("aria-disabled", canSave ? "false" : "true");
+  btn.setAttribute("aria-label", S.saving ? "Saving" : "Save");
+  const label = btn.querySelector("span");
+  if (label) label.textContent = S.saving ? "Saving…" : "Save";
+}
+
+function editorPane() {
+  return `<div class="vv-editor-pane"><textarea class="vv-editor" data-act="edit" spellcheck="false" aria-label="노트 마크다운 편집">${kit.esc(S.draft)}</textarea></div>`;
+}
+
+function readerPane(opts = {}) {
+  const focus = opts.focus === true;
+  if (S.noteLoading) return `<div class="vv-reader${focus ? " vv-reader-focus" : ""}" aria-busy="true">${kit.skeleton(1, 28)}${kit.skeleton(5, 16)}</div>`;
+  if (S.noteError) return `<div class="vv-reader${focus ? " vv-reader-focus" : ""}"><div class="k-error" role="alert">${kit.esc(S.noteError)}</div></div>`;
   const n = S.note;
-  if (!n) return `<div class="vv-reader k-empty k-muted">왼쪽에서 노트를 선택하세요.</div>`;
-  const back = (n.backlinks || []).map((b) => `<button class="vv-item" data-act="select" data-path="${kit.esc(b.path)}">${kit.esc(b.title || stem(b.path))}</button>`).join("");
-  return `<div class="vv-reader">
-    <div class="vv-head"><h2>${kit.esc(n.title || stem(n.path))}</h2>${kit.safeUrl(n.url) ? `<button class="k-btn" data-act="open" data-url="${kit.esc(n.url)}">ob-note에서 열기</button>` : ""}</div>
+  if (!n) {
+    return `<div class="vv-reader${focus ? " vv-reader-focus" : ""} k-empty k-muted">${
+      focus ? "노트를 불러오는 중이거나 표시할 내용이 없습니다." : "왼쪽에서 노트를 선택하세요."
+    }</div>`;
+  }
+  const back = S.viewMode === "preview"
+    ? (n.backlinks || []).map((b) => `<button class="vv-item" data-act="select" data-path="${kit.esc(b.path)}">${kit.esc(b.title || stem(b.path))}</button>`).join("")
+    : "";
+  const actions = [
+    modeToolbar(),
+    focus ? `<button class="k-btn" data-act="show-explorer" type="button">목록 보기</button>` : "",
+    !focus && isFs() && !compact() ? `<button class="k-btn" data-act="hide-list" type="button">목록 숨기기</button>` : "",
+    kit.safeUrl(n.url) ? `<button class="k-btn" data-act="open" data-url="${kit.esc(n.url)}">ob-note에서 열기</button>` : "",
+  ].filter(Boolean).join("");
+  // Toolbar always sits above the title (focus and explorer alike).
+  const actionBar = `<div class="vv-head-actions vv-head-actions-top">${actions}</div>`;
+  const head = `<div class="vv-head vv-head-stack">${actionBar}<h2>${kit.esc(n.title || stem(n.path))}${S.dirty ? '<span class="vv-dirty" title="수정됨">•</span>' : ""}</h2></div>`;
+  const body = S.viewMode === "edit"
+    ? editorPane()
+    : `${noteBodyHtml(n)}${back ? `<div class="vv-back"><div class="k-strong">백링크 ${n.backlinks.length}</div>${back}</div>` : ""}`;
+  return `<div class="vv-reader${focus ? " vv-reader-focus" : ""}">
+    ${head}
     <div class="vv-facts k-caption k-faint"><span>${kit.esc(n.path)}</span>${n.updated_at ? `<span>수정 ${kit.esc(kit.fmtDate(n.updated_at))}</span>` : ""}
       ${(n.tags || []).map((t) => `<span class="vv-chip">${kit.esc(t)}</span>`).join(" ")}</div>
-    <div class="k-md">${kit.renderMarkdown(withoutTitle(n))}</div>
-    ${back ? `<div class="vv-back"><div class="k-strong">백링크 ${n.backlinks.length}</div>${back}</div>` : ""}</div>`;
+    ${S.saveError ? `<div class="k-error" role="alert">${kit.esc(S.saveError)}</div>` : ""}
+    ${body}</div>`;
 }
 
 // ---- graph (small force layout, no dependencies)
@@ -520,68 +1097,407 @@ function graphPane() {
 }
 
 function fullscreen() {
-  const seg = `<div class="k-seg" role="group" aria-label="보기">
-    <button data-act="tab" data-t="notes" aria-pressed="${S.tab === "notes"}">노트</button>
-    <button data-act="tab" data-t="graph" aria-pressed="${S.tab === "graph"}">그래프</button></div>`;
+  // 열기 → focus: document only (no left tree). 전체 보기 → explorer: tree + reader (no 노트/그래프 tabs).
+  if (S.fsMode === "focus") {
+    return `<div class="vv-fs vv-fs-focus">${readerPane({ focus: true })}</div>`;
+  }
+  // vault_graph tool result: show the graph canvas only.
+  if (kind() === "graph" || S.tab === "graph") {
+    return `<div class="vv-fs"><div style="min-height:0;overflow:auto;flex:1">${graphPane()}</div></div>`;
+  }
   let body;
-  if (S.tab === "graph") body = `<div style="min-height:0;overflow:auto">${graphPane()}</div>`;
-  else if (compact()) {
+  if (compact()) {
     const panes = `<div class="k-seg" role="group" aria-label="영역" style="margin-bottom:6px"><button data-act="pane" data-p="tree" aria-pressed="${S.pane === "tree"}">목록</button><button data-act="pane" data-p="reader" aria-pressed="${S.pane === "reader"}">본문</button></div>`;
     body = `<div class="vv-body vv-compact"><div style="min-height:0;display:flex;flex-direction:column">${panes}${S.pane === "tree" ? treePane() : readerPane()}</div></div>`;
-  } else body = `<div class="vv-body">${treePane()}${readerPane()}</div>`;
-  return `<div class="vv-fs"><div>${seg}</div>${body}</div>`;
+  } else {
+    body = `<div class="vv-body">${treePane()}${readerPane()}</div>`;
+  }
+  return `<div class="vv-fs">${body}</div>`;
 }
 
 function render() {
   if (S.result === undefined) { root.innerHTML = `<div aria-busy="true"><div class="k-skel" style="height:176px"></div></div>`; return; }
-  const keepFilter = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.act === "filter";
+  const active = document.activeElement;
+  const keepFilter = active && active.dataset && active.dataset.act === "filter";
+  const keepEdit = active && active.dataset && active.dataset.act === "edit";
+  const editSel = keepEdit ? { start: active.selectionStart, end: active.selectionEnd } : null;
   root.innerHTML = isFs() ? fullscreen() : inline();
-  if (keepFilter) { const el = root.querySelector("[data-act=filter]"); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }
+  if (keepFilter) {
+    const el = root.querySelector("[data-act=filter]");
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  } else if (keepEdit) {
+    const el = root.querySelector("[data-act=edit]");
+    if (el) {
+      el.focus();
+      if (editSel) el.setSelectionRange(editSel.start, editSel.end);
+    }
+  } else if (S.viewMode === "edit" && isFs()) {
+    const el = root.querySelector("[data-act=edit]");
+    if (el) {
+      el.focus();
+      // Grow textarea to content (field-sizing fallback).
+      el.style.height = "auto";
+      el.style.height = `${Math.max(el.scrollHeight, 240)}px`;
+    }
+  }
+  if (S.viewMode === "preview") hydrateVaultImages();
+}
+
+/** Load vault-relative images via vault_asset → data URL (iframe cannot hit /api/files/raw). */
+async function hydrateVaultImages() {
+  const imgs = Array.from(root.querySelectorAll("img[data-vault-src]"));
+  if (!imgs.length) return;
+  const notePath =
+    (S.note && S.note.path) ||
+    (kind() === "note" && S.result && S.result.path) ||
+    "";
+  await Promise.all(
+    imgs.map(async (img) => {
+      const src = img.getAttribute("data-vault-src") || "";
+      const path = resolveVaultAssetPath(notePath, src);
+      if (!path || /^(https?:|data:|blob:)/i.test(path)) return;
+      if (img.dataset.hydrating === "1") return;
+      img.dataset.hydrating = "1";
+      try {
+        const data = await call("vault_asset", { path });
+        if (data && data.data_url) {
+          img.src = data.data_url;
+          img.removeAttribute("data-vault-src");
+          img.removeAttribute("data-hydrating");
+        }
+      } catch (e) {
+        const fallback = document.createElement("span");
+        fallback.className = "k-caption k-faint";
+        fallback.textContent = `[이미지 로드 실패: ${src}]`;
+        img.replaceWith(fallback);
+      }
+    }),
+  );
 }
 
 // ---------------------------------------------------------------- actions
 const openUrl = (u) => { const url = kit.safeUrl(u); if (url) app.openLink({ url }).catch(() => {}); };
 
-async function loadTree() {
-  if (S.tree || S.treeLoading) return;
-  if (kind() === "tree") { S.tree = S.result; return; }
+async function loadTree(force = false) {
+  if (!force && (S.tree || S.treeLoading)) return;
+  if (!force && kind() === "tree") { S.tree = S.result; return; }
   S.treeLoading = true; S.treeError = null; render();
   try { S.tree = await call("vault_tree", {}); } catch (e) { S.treeError = e.message; } finally { S.treeLoading = false; render(); }
 }
-async function loadGraph() {
-  if (S.graph || S.graphLoading) return;
-  if (kind() === "graph") { S.graph = S.result; return; }
+async function loadGraph(force = false) {
+  if (!force && (S.graph || S.graphLoading)) return;
+  if (!force && kind() === "graph") { S.graph = S.result; return; }
   S.graphLoading = true; S.graphError = null; render();
   try { S.graph = await call("vault_graph", {}); } catch (e) { S.graphError = e.message; } finally { S.graphLoading = false; render(); }
 }
 async function selectNote(path) {
-  S.tab = "notes"; S.pane = "reader"; S.noteLoading = true; S.noteError = null; render();
-  try { S.note = await call("vault_read", { path }); } catch (e) { S.noteError = e.message; S.note = null; } finally { S.noteLoading = false; render(); }
+  S.tab = "notes"; S.pane = "reader"; S.noteLoading = true; S.noteError = null;
+  S.viewMode = "preview"; S.dirty = false; S.saveError = null; S.previewLoading = false;
+  render();
+  try {
+    const data = await call("vault_read", { path });
+    bindNote(data);
+    // Older API / cache without content_html → render on the server.
+    if (S.note && !(typeof S.note.content_html === "string" && S.note.content_html.trim())) {
+      S.noteLoading = false;
+      render();
+      await refreshPreviewHtml();
+    }
+  } catch (e) {
+    S.noteError = e.message;
+    bindNote(null);
+  } finally {
+    S.noteLoading = false;
+    render();
+  }
 }
+
+async function saveNote() {
+  if (!S.note || !S.note.path || !S.dirty || S.saving) return;
+  S.saving = true;
+  S.saveError = null;
+  updateSaveButton();
+  try {
+    const path = S.note.path;
+    await call("vault_write", { path, content: S.draft });
+    const data = await call("vault_read", { path });
+    bindNote(data, { keepMode: true });
+    if (kind() === "note" && S.result && S.result.path === path) S.result = data;
+    // Keep tree labels fresh after save.
+    if (isFs() && S.fsMode === "explorer") loadTree(true).catch(() => {});
+  } catch (e) {
+    S.saveError = e.message || "저장에 실패했습니다.";
+    S.saving = false;
+  }
+  render();
+}
+
 function enterFullscreen() {
-  if (kind() === "note" && !S.note) S.note = S.result;
-  loadTree();
-  if (S.tab === "graph" || kind() === "graph") { S.tab = kind() === "graph" ? "graph" : S.tab; loadGraph(); }
+  if (S.pendingFocus) {
+    S.fsMode = "focus";
+    S.pendingFocus = false;
+  } else if (S.fsMode !== "focus") {
+    S.fsMode = "explorer";
+  }
+  if (kind() === "note" && !S.note) {
+    bindNote(S.result);
+    if (S.note && !(typeof S.note.content_html === "string" && S.note.content_html.trim())) {
+      refreshPreviewHtml().then(() => render()).catch(() => {});
+    }
+  }
+  if (S.fsMode === "explorer") {
+    if (kind() === "graph") {
+      S.tab = "graph";
+      loadGraph();
+    } else {
+      S.tab = "notes";
+      loadTree();
+    }
+  }
+  if (S.pendingPath) {
+    const path = S.pendingPath;
+    S.pendingPath = null;
+    selectNote(path);
+  } else {
+    render();
+  }
+}
+
+/** Open a single note fullscreen without the left tree (card 열기). */
+async function openNoteFullscreen(path) {
+  if (!path) return;
+  S.pendingPath = path;
+  S.pendingFocus = true;
+  S.tab = "notes";
+  S.pane = "reader";
+  if (isFs()) {
+    S.fsMode = "focus";
+    S.pendingPath = null;
+    S.pendingFocus = false;
+    await selectNote(path);
+    return;
+  }
+  if (canFullscreen()) {
+    try {
+      await app.requestDisplayMode({ mode: "fullscreen" });
+    } catch (_) {
+      S.pendingPath = null;
+      S.pendingFocus = false;
+      await selectNote(path);
+    }
+    return;
+  }
+  S.pendingPath = null;
+  S.pendingFocus = false;
+  await selectNote(path);
+}
+
+async function enterExplorerFullscreen() {
+  S.fsMode = "explorer";
+  S.pendingFocus = false;
+  S.tab = "notes";
+  if (isFs()) {
+    loadTree();
+    render();
+    return;
+  }
+  if (canFullscreen()) {
+    await app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
+  }
+}
+
+/** Host notifies after vault_write/append/… so the open explorer shows fresh content. */
+async function refreshAfterMutation(hintPath) {
+  const openPath =
+    (S.note && S.note.path) ||
+    (kind() === "note" && S.result && S.result.path) ||
+    null;
+  const targetPath = openPath || hintPath || null;
+
+  // Do not clobber in-progress edits with an external reload.
+  if (S.dirty) {
+    if (isFs()) await loadTree(true);
+    render();
+    return;
+  }
+
+  if (isFs()) {
+    await loadTree(true);
+    if (S.tab === "graph") await loadGraph(true);
+    if (targetPath) await selectNote(targetPath);
+    else render();
+    return;
+  }
+
+  if (kind() === "note" && S.result && S.result.path) {
+    if (!hintPath || hintPath === S.result.path) {
+      try {
+        const data = await call("vault_read", { path: S.result.path });
+        S.result = data;
+        bindNote(data, { keepMode: true });
+      } catch (e) {
+        S.noteError = e.message;
+      }
+      render();
+    }
+    return;
+  }
+
+  if (kind() === "tree") {
+    try {
+      const data = await call("vault_tree", {});
+      S.result = data;
+      S.tree = data;
+    } catch (e) {
+      S.treeError = e.message;
+    }
+    render();
+    return;
+  }
+
+  if (kind() === "list") {
+    try {
+      const data = await call("vault_list", { prefix: S.result.prefix || "" });
+      S.result = data;
+    } catch (_) { /* keep previous list */ }
+    render();
+  }
 }
 
 root.addEventListener("click", async (ev) => {
-  const el = ev.target.closest("[data-act],[data-href],[data-wiki]");
+  // Public-share style HTML: in-page anchors (#heading).
+  const hashA = ev.target.closest("a[href^='#']");
+  if (hashA && root.contains(hashA) && hashA.dataset.wiki === undefined) {
+    const raw = (hashA.getAttribute("href") || "").slice(1);
+    if (raw) {
+      let id = raw;
+      try { id = decodeURIComponent(raw); } catch (_) { /* keep raw */ }
+      const target = root.querySelector(`#${CSS.escape(id)}`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+        ev.preventDefault();
+        return;
+      }
+    }
+  }
+  const el = ev.target.closest("[data-act],[data-href],[data-wiki],[data-heading]");
   if (!el) return;
   if (el.dataset.href) { openUrl(el.dataset.href); return; }
-  if (el.dataset.wiki !== undefined) { const p = resolveWiki(el.dataset.wiki); if (p) selectNote(p); return; }
+  if (el.dataset.heading !== undefined) {
+    const target = root.querySelector(`#${CSS.escape(el.dataset.heading)}`);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      ev.preventDefault();
+    }
+    return;
+  }
+  if (el.dataset.wiki !== undefined) {
+    ev.preventDefault();
+    const p = resolveWiki(el.dataset.wiki);
+    if (p) selectNote(p);
+    return;
+  }
   const act = el.dataset.act;
   if (act === "open") openUrl(el.dataset.url);
-  else if (act === "expand") await app.requestDisplayMode({ mode: "fullscreen" }).catch(() => {});
-  else if (act === "select" || act === "select-graph") selectNote(el.dataset.path);
-  else if (act === "tab") { S.tab = el.dataset.t; render(); if (S.tab === "graph") loadGraph(); else loadTree(); }
+  else if (act === "open-note") await openNoteFullscreen(el.dataset.path);
+  else if (act === "expand") await enterExplorerFullscreen();
+  else if (act === "mode-preview") {
+    S.viewMode = "preview";
+    // Always use server HTML (ob-note share pipeline), especially after edits.
+    if (S.dirty || !(S.note && S.note.content_html)) {
+      render();
+      await refreshPreviewHtml();
+    }
+    render();
+  }
+  else if (act === "mode-edit") {
+    S.viewMode = "edit";
+    render();
+  }
+  else if (act === "mode-save") {
+    if (el.getAttribute("aria-disabled") === "true") return;
+    await saveNote();
+  }
+  else if (act === "hide-list") {
+    S.fsMode = "focus";
+    render();
+  }
+  else if (act === "show-explorer") {
+    S.fsMode = "explorer";
+    S.tab = "notes";
+    S.pane = "reader";
+    loadTree();
+    render();
+  }
+  else if (act === "select" || act === "select-graph") {
+    if (act === "select-graph") {
+      S.fsMode = "focus";
+      S.tab = "notes";
+    }
+    selectNote(el.dataset.path);
+  }
   else if (act === "pane") { S.pane = el.dataset.p; render(); }
 });
+// Preview media use short-lived signed URLs. If one expired (note opened long after the
+// tool call), re-render the note once to get fresh links instead of showing broken images.
+let previewRefreshedAt = 0;
+root.addEventListener("error", async (ev) => {
+  const img = ev.target;
+  if (!(img instanceof HTMLImageElement) || !String(img.src).includes("/s/_preview/raw")) return;
+  if (S.viewMode !== "preview" || !S.note || Date.now() - previewRefreshedAt < 30000) return;
+  previewRefreshedAt = Date.now();
+  await refreshPreviewHtml();
+  render();
+}, true);
 root.addEventListener("input", (ev) => {
-  if (ev.target.dataset && ev.target.dataset.act === "filter") { S.filter = ev.target.value; render(); }
+  const t = ev.target;
+  if (!t || !t.dataset) return;
+  if (t.dataset.act === "filter") {
+    // Never re-render the <input> itself: that kills Korean (IME) composition.
+    S.filter = t.value;
+    if (ev.isComposing) return;
+    updateTreeList();
+    return;
+  }
+  if (t.dataset.act === "edit") {
+    S.draft = t.value;
+    S.dirty = S.draft !== S.savedContent;
+    // Keep typing smooth: resize + save affordance only (no full re-render).
+    t.style.height = "auto";
+    t.style.height = `${Math.max(t.scrollHeight, 240)}px`;
+    updateSaveButton();
+    const dirtyMark = root.querySelector(".vv-dirty");
+    if (S.dirty && !dirtyMark) {
+      const h2 = root.querySelector(".vv-reader h2");
+      if (h2) h2.insertAdjacentHTML("beforeend", '<span class="vv-dirty" title="수정됨">•</span>');
+    } else if (!S.dirty && dirtyMark) {
+      dirtyMark.remove();
+    }
+  }
+});
+/** Refresh only the note list for the current filter (keeps the input/IME intact). */
+function updateTreeList() {
+  const list = root.querySelector("[data-role=tree-list]");
+  if (!list) return;
+  const q = S.filter.trim().toLowerCase();
+  list.innerHTML = treeHtml(S.tree && S.tree.children, q) || `<div class="k-empty k-muted">노트가 없습니다.</div>`;
+}
+root.addEventListener("compositionend", (ev) => {
+  const t = ev.target;
+  if (t && t.dataset && t.dataset.act === "filter") { S.filter = t.value; updateTreeList(); }
 });
 root.addEventListener("keydown", (ev) => {
+  if ((ev.metaKey || ev.ctrlKey) && String(ev.key || "").toLowerCase() === "s") {
+    if (!S.note || !S.dirty) return;
+    ev.preventDefault();
+    saveNote();
+    return;
+  }
   const el = ev.target;
-  if ((ev.key === "Enter" || ev.key === " ") && el.dataset && el.dataset.act === "select-graph") { ev.preventDefault(); selectNote(el.dataset.path); }
+  if ((ev.key === "Enter" || ev.key === " ") && el.dataset && el.dataset.act === "select-graph") {
+    ev.preventDefault();
+    selectNote(el.dataset.path);
+  }
 });
 
 // ---------------------------------------------------------------- lifecycle
@@ -590,6 +1506,7 @@ app.ontoolresult = (r) => {
   S.result = r && r.isError ? { kind: "none" } : structured(r) || { kind: "none" };
   if (S.result.ok === false) S.result = { kind: "none" };
   S.tree = null; S.graph = null; S.note = null; S.filter = "";
+  S.viewMode = "preview"; S.draft = ""; S.savedContent = ""; S.dirty = false; S.saving = false; S.saveError = null;
   render();
   if (isFs()) enterFullscreen();
 };
@@ -599,6 +1516,14 @@ app.addEventListener("hostcontextchanged", (changed) => {
   kit.applyHost(changed);
   render();
   if (!wasFs && isFs()) enterFullscreen();
+});
+
+// agentic-work host posts this after mutation tools; App client ignores unknown methods.
+window.addEventListener("message", (ev) => {
+  const data = ev && ev.data;
+  if (!data || data.method !== "ui/notifications/vault-refresh") return;
+  const path = data.params && data.params.path;
+  refreshAfterMutation(typeof path === "string" ? path : undefined).catch(() => {});
 });
 
 render();

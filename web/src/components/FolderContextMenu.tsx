@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 export type FolderMenuAction =
   | "new-note"
   | "new-folder"
+  | "files"
   | "duplicate"
   | "compress"
   | "share"
@@ -60,6 +61,7 @@ function folderItems(pinned: boolean): MenuItem[] {
   return [
     { action: "new-note", label: "New note" },
     { action: "new-folder", label: "New folder" },
+    { action: "files", label: "Files..." },
     { action: "duplicate", label: "Duplicate", sepBefore: true },
     { action: "compress", label: "Compress" },
     { action: "share", label: "Share public link", sepBefore: true },
@@ -119,7 +121,7 @@ export function FolderContextMenu({
   }, [onClose]);
 
   const pad = 8;
-  const approxH = menu.kind === "panel" ? 90 : menu.kind === "folder" ? 360 : 320;
+  const approxH = menu.kind === "panel" ? 90 : menu.kind === "folder" ? 400 : 320;
   const approxW = 200;
   const left = Math.min(menu.x, window.innerWidth - approxW - pad);
   const top = Math.min(menu.y, window.innerHeight - approxH - pad);
@@ -129,7 +131,11 @@ export function FolderContextMenu({
       ? panelItems()
       : menu.kind === "folder"
         ? folderItems(pinned)
-        : fileItems(pinned, /\.md$/i.test(menu.path));
+        : fileItems(
+            pinned,
+            /\.md$/i.test(menu.path) ||
+              /\.(pdf|ppt|pptx|xls|xlsx|zip|doc|docx)$/i.test(menu.path),
+          );
 
   return createPortal(
     <div

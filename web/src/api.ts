@@ -14,7 +14,7 @@ export type ShareEntry = {
   token: string;
   path: string;
   title: string;
-  type?: "note" | "folder";
+  type?: "note" | "folder" | "file";
   created_at: number;
   url_path: string;
   url?: string;
@@ -274,8 +274,8 @@ export const api = {
     }>("/files/rename", {
       method: "POST",
       body: JSON.stringify({
-        from_path,
-        to_path,
+        from_path: from_path.normalize("NFC"),
+        to_path: to_path.normalize("NFC"),
         copy_companions: Boolean(opts?.copyCompanions),
       }),
     }),
@@ -350,7 +350,7 @@ export const api = {
       token: string;
       path: string;
       title: string;
-      type?: "note" | "folder";
+      type?: "note" | "folder" | "file";
       created_at?: number;
       url_path: string;
       url?: string;

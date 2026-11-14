@@ -119,6 +119,7 @@ ALLOWED_UPLOAD_SUFFIXES = {
     ".pptx",
     ".xls",
     ".xlsx",
+    ".zip",
     ".mp4",
     ".m4v",
     ".webm",
@@ -139,6 +140,13 @@ class WriteBody(BaseModel):
     content: str = ""
     # Editor save: H1 becomes the filename. Same note_id, old path removed.
     sync_filename: bool = False
+
+
+class RenderBody(BaseModel):
+    """Markdown → HTML for MCP App preview (same pipeline as public /s/{token})."""
+
+    content: str = ""
+    path: str = ""  # optional note path (reserved for relative-link context)
 
 
 class AppendBody(BaseModel):
@@ -235,7 +243,23 @@ def _local_tree_children() -> list[dict[str, Any]]:
         if child.name in HIDDEN_SKIP or child.name == ".vault":
             continue
         children.append(_tree_node(child, root))
-    return vault_order.apply_order("", children)
+    # Linux keeps NFC and NFD Hangul as different directories. Show one folder.
+    return vault_sync.collapse_nfc_nodes(vault_order.apply_order("", children))
+
+
+def _mcp_note_html(content: str, rel: str) -> str:
+    """MCP App HTML; media use short-lived signed URLs (nothing is shared or persisted)."""
+    from application import preview_sign, utils
+
+    base = utils.sharing_url()
+    user = vault_backend.current_user_id() or ""
+    if not (rel and base.startswith("https://") and user):
+        return viewer_html.build_mcp_note_html(content)
+    return viewer_html.build_mcp_note_html(
+        content,
+        note_path=rel,
+        url_for_asset=lambda doc, path: preview_sign.build_url(base, user, doc, path),
+    )
 
 
 @router.get("/tree")
@@ -349,6 +373,12 @@ def list_files(
                 item["size_bytes"] = row["size_bytes"]
                 item["created_at"] = row["created_at"]
                 item["updated_at"] = row["updated_at"]
+            # Same preview shape as vault_search cards (MCP App / vault_list UI).
+            meta = vault_index.get_meta(rel)
+            preview = (meta.body_preview if meta else "") or ""
+            if preview:
+                item["body_preview"] = preview
+                item["snippet"] = preview
         files.append(item)
     return {"prefix": cleaned, "ext": ext, "count": len(files), "files": files}
 
@@ -413,20 +443,45 @@ def read_file(request: Request, path: str) -> dict:
     note_row = (
         notes_db.ensure_note_for_path(rel) if target.suffix.lower() == ".md" else None
     )
-    return {
+    title = (
+        (note_row or {}).get("title")
+        or (meta.title if meta else Path(rel).stem)
+    )
+    payload: dict[str, Any] = {
         "path": rel,
         "content": content,
         "word_count": meta.word_count if meta else len(content.split()),
         "char_count": meta.char_count if meta else len(content),
         "backlinks": backlinks,
-        "title": (note_row or {}).get("title")
-        or (meta.title if meta else Path(rel).stem),
+        "title": title,
         "tags": meta.tags if meta else [],
         "note_id": (note_row or {}).get("note_id"),
         "size_bytes": (note_row or {}).get("size_bytes", target.stat().st_size),
         "created_at": (note_row or {}).get("created_at"),
         "updated_at": (note_row or {}).get("updated_at"),
     }
+    # Same HTML pipeline as public /s/{token} share pages (tables, code, images…).
+    if target.suffix.lower() in {".md", ".markdown"}:
+        try:
+            payload["content_html"] = _mcp_note_html(content, rel)
+        except Exception:
+            logger.exception("content_html render failed for %s", rel)
+    return payload
+
+
+@router.post("/render")
+def render_markdown(request: Request, body: RenderBody) -> dict:
+    """Render markdown with the public-share HTML pipeline (MCP App Preview)."""
+    require_user_id(request)
+    text = body.content if body.content is not None else ""
+    if len(text) > 1_500_000:
+        raise HTTPException(status_code=413, detail="content too large")
+    try:
+        html = _mcp_note_html(text, (body.path or "").replace("\\", "/").strip().lstrip("/"))
+    except Exception as exc:
+        logger.exception("render_markdown failed")
+        raise HTTPException(status_code=500, detail="markdown render failed") from exc
+    return {"ok": True, "html": html, "path": (body.path or "").strip() or None}
 
 
 @router.get("/raw")
@@ -556,6 +611,8 @@ async def upload_file(
 
 _FILENAME_BAD_RE = re.compile(r'[\\/:*?"<>|#]')
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+# Default new-note names from uniqueNamedPath("Untitled") / "Untitled 2" …
+_UNTITLED_STEM_RE = re.compile(r"^Untitled(?: \d+)?$")
 
 
 def _extract_markdown_h1(content: str) -> str | None:
@@ -579,6 +636,35 @@ def _sanitize_note_stem(title: str) -> str:
     return cleaned or "Untitled"
 
 
+def _replace_or_set_h1(content: str, title: str) -> str:
+    """Rewrite the first ATX H1 to ``title`` (frontmatter preserved). Prepend when missing."""
+    text = content or ""
+    safe = (title or "").strip() or "Untitled"
+    prefix = ""
+    body = text
+    if body.startswith("---\n") or body.startswith("---\r\n"):
+        end = body.find("\n---", 3)
+        if end >= 0:
+            after = body.find("\n", end + 4)
+            if after >= 0:
+                prefix = body[: after + 1]
+                body = body[after + 1 :]
+            else:
+                return text
+    match = _H1_RE.search(body)
+    if match:
+        # ``_H1_RE``'s trailing ``\s*`` can swallow blank lines after the
+        # heading; only rewrite through the end of that line.
+        start = match.start()
+        nl = body.find("\n", start)
+        end = nl if nl >= 0 else len(body)
+        return prefix + body[:start] + f"# {safe}" + body[end:]
+    rest = body.lstrip("\n")
+    if rest:
+        return prefix + f"# {safe}\n\n" + rest
+    return prefix + f"# {safe}\n\n"
+
+
 def _alloc_sibling_md(rel_path: str, stem: str) -> str:
     """``parent/{stem}.md``, or ``{stem} N.md`` when a different sibling exists."""
     rel = rel_path.replace("\\", "/").strip("/")
@@ -595,15 +681,27 @@ def _alloc_sibling_md(rel_path: str, stem: str) -> str:
     raise HTTPException(status_code=409, detail="Could not allocate a unique note name")
 
 
+def _is_untitled_stem(stem: str) -> bool:
+    """True for default new-note names that may still follow an H1 retitle."""
+    return bool(_UNTITLED_STEM_RE.match(stem or ""))
+
+
 def _retitle_rel(src_rel: str, content: str) -> str:
-    """Return the vault path the note should occupy after an H1 retitle."""
+    """Return the vault path after an H1 retitle.
+
+    Only Untitled / Untitled N stems are renamed. Once the user (or tree rename)
+    has set a real filename, editing the H1 keeps that path.
+    """
     if not notes_db.is_markdown_path(src_rel):
+        return src_rel
+    current = Path(src_rel).stem
+    if not _is_untitled_stem(current):
         return src_rel
     title = _extract_markdown_h1(content)
     if not title:
         return src_rel
     stem = _sanitize_note_stem(title)
-    if stem == Path(src_rel).stem:
+    if stem == current:
         return src_rel
     return _alloc_sibling_md(src_rel, stem)
 
@@ -747,19 +845,29 @@ def mkdir(request: Request, body: MkdirBody) -> dict:
 @router.post("/rename")
 def rename(request: Request, body: RenameBody) -> dict:
     require_user_id(request)
+    # Sidebar paths can be NFD (decomposed Hangul from S3 keys). Storage and
+    # the S3 put must use NFC, or Linux writes the file into a twin folder
+    # while the upload still looks at the folder the user dropped on.
+    from_rel = vault_backend._nfc_rel(body.from_path)
+    to_rel = vault_backend._nfc_rel(body.to_path)
     try:
-        src = vault_backend.resolve_vault_path(body.from_path)
-        dst = vault_backend.resolve_vault_path(body.to_path)
+        src = vault_backend.resolve_vault_path(from_rel)
+        dst = vault_backend.resolve_vault_path(to_rel)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not src.exists():
-        raise HTTPException(status_code=404, detail="Source not found")
+        found = vault_backend.find_vault_file(from_rel)
+        if found is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        src = found
+    if src.resolve() == dst.resolve():
+        return {"ok": True, "from": from_rel, "to": to_rel, "companion_images": None}
     was_file = src.is_file()
-    from_name = Path(body.from_path).name
-    to_name = Path(body.to_path).name
+    from_name = Path(from_rel).name
+    to_name = Path(to_rel).name
     if vault_backend.backend_mode() == "s3":
         # Queue deletes for old keys before the local move.
-        vault_sync.enqueue_delete_tree(body.from_path)
+        vault_sync.enqueue_delete_tree(from_rel)
     dst.parent.mkdir(parents=True, exist_ok=True)
     # Case-only rename (agent → Agent) needs a temp hop on case-insensitive disks.
     if from_name.lower() == to_name.lower() and from_name != to_name:
@@ -770,53 +878,64 @@ def rename(request: Request, body: RenameBody) -> dict:
         tmp.rename(src.parent / to_name)
     else:
         shutil.move(str(src), str(dst))
-    notes_db.on_note_renamed(body.from_path, body.to_path)
-    if notes_db.is_markdown_path(body.from_path):
-        vault_index.remove_note(body.from_path)
-    if notes_db.is_markdown_path(body.to_path):
+    # Filename → H1: tree/API rename keeps the note title in sync with the stem
+    # (mirrors H1 → filename on save). Do this before notes_db/index so title
+    # is taken from the updated heading, not a stale Untitled H1.
+    if was_file and notes_db.is_markdown_path(to_rel) and Path(from_rel).stem != Path(to_rel).stem:
+        try:
+            text = dst.read_text(encoding="utf-8", errors="replace")
+            synced = _replace_or_set_h1(text, Path(to_rel).stem)
+            if synced != text:
+                dst.write_text(synced, encoding="utf-8")
+        except Exception:
+            logger.exception("H1 sync after rename failed for %s", to_rel)
+    notes_db.on_note_renamed(from_rel, to_rel)
+    if notes_db.is_markdown_path(from_rel):
+        vault_index.remove_note(from_rel)
+    if notes_db.is_markdown_path(to_rel):
         # Index only — DB path already updated by on_note_renamed (preserves note_id).
-        vault_index.update_note(body.to_path)
+        vault_index.update_note(to_rel)
     vault_index.rebuild_index()
     # Keep public shares pointing at the new path and republish content to S3.
-    vault_share.rewrite_share_paths(body.from_path, body.to_path)
+    vault_share.rewrite_share_paths(from_rel, to_rel)
     if vault_backend.backend_mode() == "s3":
         # enqueue_delete_tree (above) + enqueue_put_tree flush together so the
         # file panel never loses the path between remote delete and re-upload.
-        vault_sync.enqueue_put_tree(body.to_path)
+        vault_sync.enqueue_put_tree(to_rel)
         vault_sync.schedule_flush_pending(reconcile_casing=True)
     else:
         try:
             if was_file:
-                vault_share.publish_vault_file_to_s3(body.to_path)
-                vault_share.delete_vault_from_s3(body.from_path)
+                vault_share.publish_vault_file_to_s3(to_rel)
+                vault_share.delete_vault_from_s3(from_rel)
             else:
-                vault_share.delete_vault_tree_from_s3(body.from_path)
+                vault_share.delete_vault_tree_from_s3(from_rel)
                 root = vault_backend.vault_root()
-                target = vault_backend.resolve_vault_path(body.to_path)
+                target = vault_backend.resolve_vault_path(to_rel)
                 if target.is_dir():
                     for p in target.rglob("*.md"):
                         rel = p.resolve().relative_to(root.resolve()).as_posix()
                         vault_share.publish_vault_file_to_s3(rel)
         except Exception:
             pass
-    vault_order.notify_renamed(body.from_path, body.to_path)
+    vault_order.notify_renamed(from_rel, to_rel)
     companion_images: str | None = None
     if (
         was_file
-        and notes_db.is_markdown_path(body.to_path)
-        and vault_companion_assets.parents_differ(body.from_path, body.to_path)
+        and notes_db.is_markdown_path(to_rel)
+        and vault_companion_assets.parents_differ(from_rel, to_rel)
     ):
         schedule = (
             vault_companion_assets.schedule_copy_companion_images
             if body.copy_companions
             else vault_companion_assets.schedule_move_companion_images
         )
-        if schedule(body.from_path, body.to_path):
+        if schedule(from_rel, to_rel):
             companion_images = "queued"
     return {
         "ok": True,
-        "from": body.from_path,
-        "to": body.to_path,
+        "from": from_rel,
+        "to": to_rel,
         "companion_images": companion_images,
     }
 

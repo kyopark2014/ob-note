@@ -202,6 +202,7 @@ def enqueue_delete(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
 
 def enqueue_put_tree(rel_dir: str = "") -> dict[str, Any]:
     """Enqueue put for every file under rel_dir (or whole vault)."""
+    rel_dir = unicodedata.normalize("NFC", (rel_dir or "").replace("\\", "/").lstrip("/"))
     root = vault_backend.vault_root()
     base = root / rel_dir if rel_dir else root
     if not base.exists():
@@ -221,6 +222,7 @@ def enqueue_put_tree(rel_dir: str = "") -> dict[str, Any]:
 
 
 def enqueue_delete_tree(rel_dir: str) -> dict[str, Any]:
+    rel_dir = unicodedata.normalize("NFC", (rel_dir or "").replace("\\", "/").lstrip("/"))
     root = vault_backend.vault_root()
     base = root / rel_dir
     if not base.exists():
@@ -708,29 +710,105 @@ def ensure_local_file(rel: str) -> Optional[Path]:
 
 def remote_file_exists(rel: str) -> bool:
     """True if any NFC/NFD spelling of ``rel`` exists as an S3 object."""
-    if vault_backend.backend_mode() != "s3":
-        return False
+    return resolve_remote_rel(rel) is not None
+
+
+def resolve_remote_rel(rel: str) -> Optional[str]:
+    """S3 key relative to the user vault that matches ``rel``.
+
+    Whole-path NFC and NFD are tried first. A key whose segments mix the two
+    forms (NFD folder, NFC filename) still matches, and the newest object wins.
+    """
+    cleaned = (rel or "").replace("\\", "/").lstrip("/")
+    if not cleaned or ".." in cleaned.split("/") or vault_backend.backend_mode() != "s3":
+        return None
     bucket, region = vault_backend.s3_bucket_and_region()
     if not bucket:
-        return False
+        return None
     prefix = vault_backend.s3_prefix()
     client = vault_backend._s3_client(region)
     from botocore.exceptions import ClientError
 
-    for cand in _path_key_candidates(rel):
+    hits: list[tuple[float, str]] = []
+    for cand in _path_key_candidates(cleaned):
         try:
-            client.head_object(Bucket=bucket, Key=prefix + cand)
-            return True
+            resp = client.head_object(Bucket=bucket, Key=prefix + cand)
         except ClientError as exc:
             code = str((exc.response or {}).get("Error", {}).get("Code") or "")
             if code in {"404", "NoSuchKey", "NotFound", "403", "AccessDenied"}:
                 continue
-            logger.debug("remote_file_exists head failed for %s: %s", cand, exc)
+            logger.debug("resolve_remote_rel head failed for %s: %s", cand, exc)
             continue
         except Exception as exc:
-            logger.debug("remote_file_exists head failed for %s: %s", cand, exc)
+            logger.debug("resolve_remote_rel head failed for %s: %s", cand, exc)
             continue
-    return False
+        lm = resp.get("LastModified")
+        ts = float(lm.timestamp()) if lm is not None else 0.0
+        hits.append((ts, cand))
+    if hits:
+        hits.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return hits[0][1]
+    return _resolve_remote_rel_mixed(client, bucket, prefix, cleaned)
+
+
+def _resolve_remote_rel_mixed(client, bucket: str, prefix: str, rel: str) -> Optional[str]:
+    """Match ``rel`` against stored keys one segment at a time (NFC)."""
+    parts = [part for part in rel.split("/") if part and part != "."]
+    if not parts:
+        return None
+    # (stored relative dir, unused score). Start at the vault prefix.
+    frontier: list[str] = [""]
+    for index, part in enumerate(parts):
+        want = unicodedata.normalize("NFC", part)
+        last = index == len(parts) - 1
+        nxt: list[tuple[str, float]] = []
+        for parent in frontier:
+            parent_prefix = prefix + (parent + "/" if parent else "")
+            try:
+                if last:
+                    paginator = client.get_paginator("list_objects_v2")
+                    for page in paginator.paginate(
+                        Bucket=bucket, Prefix=parent_prefix, Delimiter="/"
+                    ):
+                        for obj in page.get("Contents") or []:
+                            key = str(obj.get("Key") or "")
+                            if not key.startswith(parent_prefix) or key.endswith("/"):
+                                continue
+                            name = key[len(parent_prefix) :]
+                            if "/" in name:
+                                continue
+                            if unicodedata.normalize("NFC", name) != want:
+                                continue
+                            stored = f"{parent}/{name}" if parent else name
+                            lm = obj.get("LastModified")
+                            ts = float(lm.timestamp()) if lm is not None else 0.0
+                            nxt.append((stored, ts))
+                else:
+                    paginator = client.get_paginator("list_objects_v2")
+                    for page in paginator.paginate(
+                        Bucket=bucket, Prefix=parent_prefix, Delimiter="/"
+                    ):
+                        for common in page.get("CommonPrefixes") or []:
+                            cp = str(common.get("Prefix") or "")
+                            if not cp.startswith(parent_prefix):
+                                continue
+                            name = cp[len(parent_prefix) :].strip("/")
+                            if not name or "/" in name:
+                                continue
+                            if unicodedata.normalize("NFC", name) != want:
+                                continue
+                            stored = f"{parent}/{name}" if parent else name
+                            nxt.append((stored, 0.0))
+            except Exception as exc:
+                logger.debug("resolve_remote_rel list failed under %s: %s", parent, exc)
+                continue
+        if not nxt:
+            return None
+        if last:
+            nxt.sort(key=lambda item: (item[1], item[0]), reverse=True)
+            return nxt[0][0]
+        frontier = [stored for stored, _ts in nxt]
+    return None
 
 
 def build_tree_from_rels(rels: list[str]) -> list[dict[str, Any]]:
@@ -743,7 +821,10 @@ def build_tree_from_rels(rels: list[str]) -> list[dict[str, Any]]:
     root: dict[str, Any] = {"children": {}}
 
     for rel in rels:
-        parts = [p for p in rel.replace("\\", "/").split("/") if p]
+        # Collapse macOS/S3 decomposed Hangul onto the composed spelling so
+        # ``도면`` and its NFD twin are one folder in the sidebar.
+        rel = unicodedata.normalize("NFC", rel.replace("\\", "/"))
+        parts = [p for p in rel.split("/") if p]
         if not parts:
             continue
         if parts[0] in HIDDEN_SKIP_NAMES:
@@ -809,7 +890,38 @@ def build_tree_from_rels(rels: list[str]) -> list[dict[str, Any]]:
                 )
         return out
 
-    return finalize(root["children"], "")
+    return collapse_nfc_nodes(finalize(root["children"], ""))
+
+
+def collapse_nfc_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge sibling nodes that differ only by Hangul NFC/NFD.
+
+    On Linux those are different directories, so a local walk can list the
+    folder the user dropped on and a twin that actually received the file.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for node in nodes:
+        name = unicodedata.normalize("NFC", str(node.get("name") or ""))
+        path = unicodedata.normalize("NFC", str(node.get("path") or ""))
+        current = dict(node)
+        current["name"] = name
+        current["path"] = path
+        if current.get("type") == "folder":
+            current["children"] = collapse_nfc_nodes(list(current.get("children") or []))
+        prev = merged.get(path)
+        if prev is None:
+            merged[path] = current
+            order.append(path)
+            continue
+        if prev.get("type") == "folder" and current.get("type") == "folder":
+            prev["children"] = collapse_nfc_nodes(
+                list(prev.get("children") or []) + list(current.get("children") or [])
+            )
+            continue
+        if prev.get("type") != "file":
+            merged[path] = current
+    return [merged[key] for key in order]
 
 
 def sync_from_s3_incremental(

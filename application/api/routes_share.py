@@ -77,7 +77,7 @@ def _html_response(page: str) -> HTMLResponse:
 
 @api_router.post("/share")
 def create_share(request: Request, body: ShareBody) -> dict:
-    """Create (or reuse) a public share link for a markdown note or folder."""
+    """Create (or reuse) a public share link for a note, file, or folder."""
     require_user_id(request)
     try:
         entry = vault_share.create_or_get_share(body.path)
@@ -88,15 +88,16 @@ def create_share(request: Request, body: ShareBody) -> dict:
     token = entry["token"]
     url_path = vault_share.public_share_path(token)
     share_type = vault_share.share_entry_type(entry)
+    path = entry["path"]
     return {
         "ok": True,
         "token": token,
-        "path": entry["path"],
+        "path": path,
         "title": entry.get("title")
         or (
-            Path(entry["path"]).name
-            if share_type == "folder"
-            else Path(entry["path"]).stem
+            Path(path).name
+            if share_type in {"folder", "file"}
+            else Path(path).stem
         ),
         "type": share_type,
         "created_at": entry.get("created_at"),
@@ -149,8 +150,38 @@ def put_share_permission(request: Request, body: SharePermissionBody) -> dict:
     return {"ok": True, "permission": permission}
 
 
+def _file_share_response(share_path: str, data: bytes | None = None) -> Response:
+    """Serve a shared binary: PDF inline, others as attachment download."""
+    name = Path(share_path).name
+    ext = Path(share_path).suffix.lower()
+    media = viewer_html.media_type_for_name(name)
+    headers = {
+        **_NO_STORE_HEADERS,
+        "Content-Disposition": (
+            f'inline; filename="{name}"'
+            if ext == ".pdf"
+            else f'attachment; filename="{name}"'
+        ),
+    }
+    if data is not None:
+        return Response(content=data, media_type=media, headers=headers)
+    target = vault_backend.resolve_vault_path(share_path)
+    return FileResponse(
+        target,
+        media_type=media,
+        filename=name,
+        content_disposition_type="inline" if ext == ".pdf" else "attachment",
+        headers={
+            "Cache-Control": _NO_STORE_HEADERS["Cache-Control"],
+            "Pragma": _NO_STORE_HEADERS["Pragma"],
+            "Expires": _NO_STORE_HEADERS["Expires"],
+            "X-Robots-Tag": _NO_STORE_HEADERS["X-Robots-Tag"],
+        },
+    )
+
+
 @public_router.get("/{token}")
-def view_share(token: str) -> HTMLResponse:
+def view_share(token: str):
     entry = vault_share.get_share(token, refresh=True)
     if not entry:
         raise HTTPException(status_code=404, detail="Share not found")
@@ -183,6 +214,23 @@ def view_share(token: str) -> HTMLResponse:
             topbar_right_html='<span style="color:#8b949e;font-size:12px">Public share</span>',
         )
         return _html_response(page)
+
+    if share_type == "file":
+        with vault_backend.user_scope(owner):
+            try:
+                target = vault_backend.resolve_vault_path(share_path)
+                if target.is_file():
+                    return _file_share_response(share_path)
+            except ValueError:
+                pass
+            data = vault_share.read_vault_bytes(share_path)
+            if data is None:
+                try:
+                    vault_share.revoke_share_if_missing(token, share_path)
+                except Exception:
+                    pass
+                raise HTTPException(status_code=404, detail="Shared file no longer exists")
+            return _file_share_response(share_path, data=data)
 
     with vault_backend.user_scope(owner):
         text = vault_share.read_vault_text(share_path)
@@ -220,6 +268,8 @@ def view_share_wiki_note(token: str, note_path: str) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="Share not found")
     share_path = (entry.get("path") or "").replace("\\", "/").lstrip("/")
     share_type = vault_share.share_entry_type(entry)
+    if share_type == "file":
+        raise HTTPException(status_code=404, detail="Shared note not found")
     decoded = unquote(note_path or "").replace("\\", "/").lstrip("/")
     if not decoded or ".." in decoded.split("/"):
         raise HTTPException(status_code=404, detail="Shared note not found")
@@ -322,6 +372,47 @@ def view_folder_share_note(token: str, name: str) -> HTMLResponse:
     return _html_response(page)
 
 
+@public_router.get("/_preview/raw")
+def preview_raw_asset(u: str, doc: str, path: str, exp: int, sig: str):
+    """MCP App preview media: signed, expiring, media-only (no share token involved).
+
+    Registered before ``/{token}/raw`` so ``_preview`` is never treated as a token.
+    """
+    from application import preview_sign
+
+    if not preview_sign.verify(u, doc, path, exp, sig):
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if Path(path).suffix.lower() not in preview_sign.MEDIA_SUFFIXES:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    headers = {
+        "Cache-Control": "private, no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+    }
+    with vault_backend.user_scope(u):
+        rel = _share_asset_rel(doc, path)
+        if Path(rel).suffix.lower() not in preview_sign.MEDIA_SUFFIXES:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        try:
+            target = vault_backend.resolve_vault_path(rel)
+            if target.is_file():
+                return FileResponse(
+                    target,
+                    media_type=viewer_html.media_type_for_name(target.name),
+                    headers=headers,
+                )
+        except ValueError:
+            pass
+        data = vault_share.read_vault_bytes(rel)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Asset not found")
+    return Response(
+        content=data,
+        media_type=viewer_html.media_type_for_name(rel),
+        headers=headers,
+    )
+
+
 @public_router.get("/{token}/raw")
 def share_raw_asset(
     token: str,
@@ -342,6 +433,8 @@ def share_raw_asset(
         "Pragma": "no-cache",
     }
     with vault_backend.user_scope(owner):
+        if share_type == "file":
+            raise HTTPException(status_code=404, detail="Asset not found")
         if share_type == "folder":
             siblings = vault_share.list_folder_share_notes(share_path)
             allowed = vault_share.folder_share_allowed_paths(share_path, siblings)

@@ -1,11 +1,12 @@
-"""MCP Apps (interactive UI) for the read tools of the use-vault MCP server.
+"""MCP Apps (interactive UI) for the use-vault MCP server.
 
 Six read tools carry ``_meta.ui.resourceUri`` -> ``ui://vault/viewer.html``. Each returns
 the same JSON text as before (what the model reads) plus a ``structuredContent`` object the
 UI draws from: ``{"ok": true, "kind": "search|note|list|tree|graph|backlinks", ...payload}``
 with a deep link ``url`` on every note.
 
-The viewer HTML is built from ``ui/`` (``python3 MCP/use-vault/ui/build.py``).
+The viewer supports Preview / Edit / Save (calls ``vault_write`` via the host proxy).
+HTML is built from ``ui/`` (``python3 MCP/use-vault/ui/build.py``).
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 import vault_client as vault
-from mcp.server.apps import Apps
+from mcp.server.apps import Apps, ResourceCsp
 from mcp.types import CallToolResult, TextContent
 
 logging.basicConfig(
@@ -146,6 +147,95 @@ def vault_read(actor_id: str, path: str, raw: bool = False) -> CallToolResult:
         return _error(e)
 
 
+# Viewer helpers (no MCP App UI of their own).
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".bmp"}
+_MAX_ASSET_BYTES = 2 * 1024 * 1024
+
+
+@apps.tool(resource_uri=VIEW_URI, visibility=["app"])
+def vault_render(actor_id: str, content: str, path: str = "") -> CallToolResult:
+    """
+    Render markdown to HTML for the MCP App preview (POST /api/files/render).
+
+    Uses the same pipeline as public ``/s/{token}`` share pages (not the client kit).
+    actor_id: account login id / email from the system prompt.
+    content: full markdown body.
+    path: optional vault-relative note path (context only).
+    return: JSON with html (structuredContent; not for model text).
+    """
+    try:
+        uid = _require_actor(actor_id)
+        if content is None:
+            raise ValueError("content is required")
+        if path:
+            path = vault.normalize_vault_path(path)
+        logger.info("vault_render actor_id=%s path=%s bytes=%s", uid, path or "-", len(content))
+        payload = vault.api_request(
+            "POST",
+            "/api/files/render",
+            user_id=uid,
+            body={"content": content, "path": path or ""},
+        )
+        html = str((payload or {}).get("html") or "")
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=vault.to_json({"ok": True, "path": path or None, "html_bytes": len(html)}),
+                )
+            ],
+            structured_content={"ok": True, "kind": "render", "path": path or None, "html": html},
+        )
+    except Exception as e:
+        return _error(e)
+
+
+@apps.tool(resource_uri=VIEW_URI, visibility=["app"])
+def vault_asset(actor_id: str, path: str) -> CallToolResult:
+    """
+    Read a vault attachment for the MCP App viewer (GET /api/files/raw).
+
+    actor_id: account login id / email from the system prompt.
+    path: vault-relative file path, e.g. AI/Drawing/img_abc.png
+    return: JSON with data_url for images (used by the vault viewer; not for model text).
+    """
+    import base64
+    import mimetypes
+    from pathlib import PurePosixPath
+
+    try:
+        uid = _require_actor(actor_id)
+        path = vault.normalize_vault_path(path)
+        ext = PurePosixPath(path).suffix.lower()
+        if ext not in _IMAGE_EXTS:
+            raise ValueError(f"unsupported asset type: {ext or '(none)'}")
+        logger.info("vault_asset actor_id=%s path=%s", uid, path)
+        raw, ctype = vault.api_request_bytes(
+            "GET",
+            "/api/files/raw",
+            user_id=uid,
+            query={"path": path},
+            max_bytes=_MAX_ASSET_BYTES,
+        )
+        if not ctype or ctype == "application/octet-stream":
+            guessed, _ = mimetypes.guess_type(path)
+            ctype = guessed or "application/octet-stream"
+        data_url = f"data:{ctype};base64,{base64.b64encode(raw).decode('ascii')}"
+        payload = {
+            "path": path,
+            "mime": ctype,
+            "bytes": len(raw),
+            "data_url": data_url,
+        }
+        # Short text for logs/model; full data_url lives in structuredContent only.
+        return CallToolResult(
+            content=[TextContent(type="text", text=vault.to_json({"ok": True, "path": path, "bytes": len(raw)}))],
+            structured_content={"ok": True, "kind": "asset", **payload},
+        )
+    except Exception as e:
+        return _error(e)
+
+
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
 def vault_search(actor_id: str, query: str, limit: int = 50) -> CallToolResult:
     """
@@ -207,11 +297,21 @@ def vault_backlinks(actor_id: str, path: str) -> CallToolResult:
         return _error(e)
 
 
+def _ob_note_origins() -> list[str]:
+    try:
+        base = vault.vault_base_url().rstrip("/")
+    except Exception:
+        return []
+    return [base] if base.startswith("https://") else []
+
+
 apps.add_html_resource(
     VIEW_URI,
     _load_html(),
     title="Vault viewer",
     description="ob-note vault viewer: search results, notes, file tree, backlinks and graph",
-    # Self-contained: no external origins are needed or allowed.
+    # Note images/videos load straight from ob-note's public-share route
+    # (``{ob-note}/s/{token}/raw``), so the iframe may fetch from that origin only.
+    csp=ResourceCsp(resource_domains=_ob_note_origins()) if _ob_note_origins() else None,
     prefers_border=False,
 )

@@ -312,6 +312,7 @@ def push_use_vault_mcp_image(
         [
             "docker",
             "build",
+            "--no-cache",
             "--platform",
             "linux/arm64",
             "--provenance=false",
@@ -380,6 +381,7 @@ def create_or_update_use_vault_mcp_runtime(
             networkConfiguration={"networkMode": "PUBLIC"},
             protocolConfiguration={"serverProtocol": "MCP"},
             environmentVariables=env_vars,
+            platformVersion="V2",
         )
         agent_runtime_arn = response["agentRuntimeArn"]
     else:
@@ -394,6 +396,7 @@ def create_or_update_use_vault_mcp_runtime(
             roleArn=role_arn,
             protocolConfiguration={"serverProtocol": "MCP"},
             environmentVariables=env_vars,
+            platformVersion="V2",
         )
         agent_runtime_arn = response["agentRuntimeArn"]
 
