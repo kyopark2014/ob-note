@@ -1,0 +1,72 @@
+/* Shared look for MCP Apps: Claude's host tokens with fallbacks (design guidelines:
+   transparent background, no hardcoded colors, 44px targets, regular/emphasized weights). */
+:root { color-scheme: light dark; }
+html, body { margin: 0; background: transparent; }
+body {
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: var(--font-text-sm-size, 14px);
+  line-height: var(--font-text-sm-line-height, 1.4);
+  color: var(--color-text-primary, light-dark(#141413, #faf9f5));
+}
+* { box-sizing: border-box; }
+.k-root {
+  padding: 4px;
+  padding-top: calc(4px + var(--safe-top, 0px));
+  padding-right: calc(4px + var(--safe-right, 0px));
+  padding-bottom: calc(4px + var(--safe-bottom, 0px));
+  padding-left: calc(4px + var(--safe-left, 0px));
+}
+.k-muted { color: var(--color-text-secondary, light-dark(#3d3d3a, #c2c0b6)); }
+.k-faint { color: var(--color-text-tertiary, light-dark(#73726c, #9c9a92)); }
+.k-caption { font-size: var(--font-text-xs-size, 12px); line-height: var(--font-text-xs-line-height, 1.4); }
+.k-strong { font-weight: var(--font-weight-semibold, 600); }
+.k-btn {
+  font: inherit; cursor: pointer; min-height: 44px; padding: 0 14px;
+  border: var(--border-width-regular, 0.5px) solid var(--color-border-primary, light-dark(rgba(31,30,29,.4), rgba(222,220,209,.4)));
+  border-radius: var(--border-radius-md, 8px);
+  background: var(--color-background-primary, light-dark(#fff, #30302e));
+  color: var(--color-text-primary, light-dark(#141413, #faf9f5));
+  font-weight: var(--font-weight-medium, 500);
+}
+.k-btn:hover { background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); }
+.k-btn.k-primary {
+  background: var(--color-background-inverse, light-dark(#141413, #faf9f5));
+  color: var(--color-text-inverse, light-dark(#fff, #141413));
+  border-color: transparent;
+}
+.k-btn:focus-visible, .k-card:focus-visible, .k-seg button:focus-visible {
+  outline: 2px solid var(--color-ring-primary, light-dark(rgba(20,20,19,.7), rgba(250,249,245,.7)));
+  outline-offset: 2px;
+}
+/* Segmented buttons instead of dropdowns (menus get clipped by the host container). */
+.k-seg { display: inline-flex; gap: 4px; padding: 3px; border-radius: var(--border-radius-md, 8px);
+  background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); }
+.k-seg button { font: inherit; cursor: pointer; min-height: 38px; padding: 0 12px; border: 0;
+  border-radius: var(--border-radius-sm, 6px); background: transparent; color: inherit; }
+.k-seg button[aria-pressed="true"] { background: var(--color-background-primary, light-dark(#fff, #30302e));
+  box-shadow: var(--shadow-hairline, 0 1px 2px rgba(0,0,0,.05)); font-weight: var(--font-weight-semibold, 600); }
+.k-skel { border-radius: var(--border-radius-md, 8px);
+  background: linear-gradient(90deg, var(--color-background-secondary, light-dark(#f5f4ed, #262624)) 25%,
+    var(--color-background-tertiary, light-dark(#faf9f5, #141413)) 50%, var(--color-background-secondary, light-dark(#f5f4ed, #262624)) 75%);
+  background-size: 200% 100%; animation: k-shimmer 1.4s ease-in-out infinite; }
+@keyframes k-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .k-skel { animation: none; } }
+.k-empty { padding: 20px 8px; text-align: center; }
+.k-error { padding: 10px 12px; border-radius: var(--border-radius-md, 8px);
+  background: var(--color-background-danger, light-dark(#f7ecec, #602a28));
+  color: var(--color-text-danger, light-dark(#7f2c28, #ee8884)); }
+/* Rendered markdown */
+.k-md { overflow-wrap: anywhere; font-size: var(--font-text-md-size, 16px); line-height: 1.55; }
+.k-md h1, .k-md h2, .k-md h3, .k-md h4 { margin: 1.1em 0 .4em; line-height: 1.25; font-weight: var(--font-weight-semibold, 600); }
+.k-md h1 { font-size: var(--font-heading-xl-size, 24px); } .k-md h2 { font-size: var(--font-heading-lg-size, 20px); }
+.k-md h3, .k-md h4 { font-size: var(--font-heading-md-size, 16px); }
+.k-md p { margin: .5em 0; } .k-md ul, .k-md ol { margin: .5em 0; padding-left: 1.4em; }
+.k-md code { font-family: var(--font-mono, ui-monospace, monospace); font-size: .9em; padding: 1px 5px;
+  border-radius: var(--border-radius-xs, 4px); background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); }
+.k-md pre { margin: .6em 0; padding: 10px 12px; overflow-x: auto; border-radius: var(--border-radius-md, 8px);
+  background: var(--color-background-secondary, light-dark(#f5f4ed, #262624)); }
+.k-md pre code { padding: 0; background: transparent; }
+.k-md blockquote { margin: .6em 0; padding-left: 12px; border-left: 3px solid var(--color-border-secondary, light-dark(rgba(31,30,29,.3), rgba(222,220,209,.3))); }
+.k-md hr { border: 0; border-top: var(--border-width-regular, .5px) solid var(--color-border-secondary, light-dark(rgba(31,30,29,.3), rgba(222,220,209,.3))); margin: 1em 0; }
+.k-md a { color: var(--color-text-info, light-dark(#3266ad, #80aadd)); text-decoration: underline; cursor: pointer; }
+.k-md .k-task { list-style: none; margin-left: -1.2em; }

@@ -12,6 +12,7 @@ import sys
 
 import vault_client as vault
 from mcp.server.mcpserver import MCPServer
+from vault_apps import apps
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +40,7 @@ try:
     mcp = MCPServer(
         name="use-vault",
         instructions=INSTRUCTIONS,
+        extensions=[apps],  # read tools with the interactive vault viewer (see vault_apps.py)
     )
     logger.info("MCP server initialized successfully")
 except Exception as e:
@@ -74,146 +76,6 @@ def vault_health(actor_id: str = "") -> str:
         uid = (actor_id or "").strip() or "local-dev"
         logger.info("vault_health actor_id=%s", uid)
         return _ok(vault.api_request("GET", "/api/health", user_id=uid))
-    except Exception as e:
-        return _err(e)
-
-
-@mcp.tool()
-def vault_tree(actor_id: str) -> str:
-    """
-    Return the full file tree for the caller's vault (GET /api/files/tree).
-
-    actor_id: account login id / email from the system prompt.
-    return: JSON tree
-    """
-    try:
-        uid = _require_actor(actor_id)
-        logger.info("vault_tree actor_id=%s", uid)
-        return _ok(vault.api_request("GET", "/api/files/tree", user_id=uid))
-    except Exception as e:
-        return _err(e)
-
-
-@mcp.tool()
-def vault_list(actor_id: str, prefix: str = "", ext: str = "md") -> str:
-    """
-    List files under a vault folder prefix (GET /api/files/list).
-
-    actor_id: account login id / email from the system prompt.
-    prefix: folder prefix, e.g. Meeting or notes (empty = vault root).
-    ext: extension filter — md | txt | * (default md).
-    return: JSON file list
-    """
-    try:
-        uid = _require_actor(actor_id)
-        if prefix:
-            prefix = vault.normalize_vault_path(prefix)
-        logger.info("vault_list actor_id=%s prefix=%s ext=%s", uid, prefix, ext)
-        return _ok(
-            vault.api_request(
-                "GET",
-                "/api/files/list",
-                user_id=uid,
-                query={"prefix": prefix or "", "ext": ext},
-            )
-        )
-    except Exception as e:
-        return _err(e)
-
-
-@mcp.tool()
-def vault_read(actor_id: str, path: str, raw: bool = False) -> str:
-    """
-    Read a vault note (GET /api/files/read).
-
-    actor_id: account login id / email from the system prompt.
-    path: vault-relative path, e.g. Meeting/Weekly-Sync.md
-    raw: if true, return markdown body only; otherwise full JSON.
-    return: note JSON or markdown body
-    """
-    try:
-        uid = _require_actor(actor_id)
-        path = vault.normalize_vault_path(path)
-        logger.info("vault_read actor_id=%s path=%s raw=%s", uid, path, raw)
-        payload = vault.api_request(
-            "GET",
-            "/api/files/read",
-            user_id=uid,
-            query={"path": path},
-        )
-        if raw:
-            return str(payload.get("content") or "")
-        return _ok(payload)
-    except Exception as e:
-        return _err(e)
-
-
-@mcp.tool()
-def vault_search(actor_id: str, query: str, limit: int = 50) -> str:
-    """
-    Full-text search over the vault index (GET /api/search).
-
-    actor_id: account login id / email from the system prompt.
-    query: search query text.
-    limit: max results (1–200, default 50).
-    return: JSON {query, results}
-    """
-    try:
-        uid = _require_actor(actor_id)
-        q = (query or "").strip()
-        if not q:
-            raise ValueError("query is required")
-        lim = max(1, min(int(limit or 50), 200))
-        logger.info("vault_search actor_id=%s q=%s limit=%s", uid, q, lim)
-        return _ok(
-            vault.api_request(
-                "GET",
-                "/api/search",
-                user_id=uid,
-                query={"q": q, "limit": lim},
-            )
-        )
-    except Exception as e:
-        return _err(e)
-
-
-@mcp.tool()
-def vault_graph(actor_id: str) -> str:
-    """
-    Return the wiki-link graph for the vault (GET /api/graph).
-
-    actor_id: account login id / email from the system prompt.
-    return: JSON graph (nodes/links)
-    """
-    try:
-        uid = _require_actor(actor_id)
-        logger.info("vault_graph actor_id=%s", uid)
-        return _ok(vault.api_request("GET", "/api/graph", user_id=uid))
-    except Exception as e:
-        return _err(e)
-
-
-@mcp.tool()
-def vault_backlinks(actor_id: str, path: str) -> str:
-    """
-    Return notes that link to the given note (GET /api/graph/backlinks).
-
-    actor_id: account login id / email from the system prompt.
-    path: vault-relative note path.
-    return: JSON backlinks
-    """
-    try:
-        uid = _require_actor(actor_id)
-        path = vault.normalize_vault_path(path)
-        logger.info("vault_backlinks actor_id=%s path=%s", uid, path)
-        return _ok(
-            vault.api_request(
-                "GET",
-                "/api/graph/backlinks",
-                user_id=uid,
-                query={"path": path},
-            )
-        )
     except Exception as e:
         return _err(e)
 
