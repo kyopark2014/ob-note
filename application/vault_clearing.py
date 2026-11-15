@@ -406,6 +406,65 @@ def scan_tree(
     }
 
 
+def count_unreferenced_from_store(kept: Iterable[str] | None = None) -> dict[str, Any]:
+    """Same verdict as ``scan_tree`` but from DynamoDB: no media is downloaded.
+
+    Used by Sync to say how many media Clearing would list. It only counts; nothing is
+    deleted and the "kept" list is not modified.
+    """
+    from application import note_store
+
+    kept_keys: set[str] = set()
+    for item in kept or []:
+        try:
+            kept_keys.add(normalize_media_rel(item).casefold())
+        except ValueError:
+            continue
+
+    def visible(rel: str) -> bool:
+        return not any(
+            part in SKIP_DIR_NAMES or part.startswith(".") for part in rel.split("/")
+        )
+
+    media: list[str] = []
+    notes: list[str] = []
+    for entry in note_store.list_items():
+        if entry.get("kind") == note_store.KIND_FOLDER:
+            continue
+        rel = _nfc(entry["path"])
+        if not visible(rel):
+            continue
+        suffix = Path(rel).suffix.lower()
+        if suffix == ".md":
+            notes.append(rel)
+        elif suffix in MEDIA_SUFFIXES:
+            media.append(rel)
+
+    referenced: set[str] = set()
+    texts = note_store.batch_get_text(notes)
+    for rel in notes:
+        text = texts.get(rel)
+        if text is None:  # large note whose body lives in S3
+            text = note_store.read_text(rel) or ""
+        folder = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        referenced.update(referenced_media_keys(text, folder))
+
+    unreferenced = kept_count = 0
+    for rel in media:
+        key = _media_key(rel)
+        if key in referenced:
+            continue
+        if key in kept_keys:
+            kept_count += 1
+        else:
+            unreferenced += 1
+    return {
+        "media_count": len(media),
+        "unreferenced_count": unreferenced,
+        "kept_count": kept_count,
+    }
+
+
 def scan_vault(
     on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -508,7 +567,19 @@ def _run_clearing_job(user_id: str) -> None:
                 progress={"pct": 0, "phase": "start"},
                 scan=None,
             )
-            if vault_backend.backend_mode() == "s3":
+            from application import note_store
+
+            if note_store.enabled():
+                _set_job(
+                    user_id,
+                    status="running",
+                    message="노트 저장소를 확인하는 중…",
+                    progress={"pct": 5, "phase": "sync"},
+                )
+                # The media scan reads files from disk: complete the local copy
+                # (notes + images) from DynamoDB / S3 first.
+                note_store.refresh_cache(include_files=True, prune=True, user_id=user_id)
+            elif vault_backend.backend_mode() == "s3":
                 _set_job(
                     user_id,
                     status="running",
@@ -591,7 +662,9 @@ def delete_one_media(rel: str) -> str:
     if cleaned != rel:
         logger.info("Clearing delete path %s resolved to %s", rel, cleaned)
     vault_share.remove_shares_for_path(cleaned)
-    if vault_backend.backend_mode() == "s3":
+    from application import note_store
+
+    if vault_backend.backend_mode() == "s3" or note_store.enabled():
         vault_sync.enqueue_delete_tree(cleaned)
     else:
         try:

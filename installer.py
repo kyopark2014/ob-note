@@ -24,6 +24,7 @@ from __future__ import annotations
 import getpass
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -44,6 +45,7 @@ from s3_files_app_data import (
 )
 from shared_infra import (
     CLUSTER,
+    NOTES_TABLE,
     ORIGIN_HEADER_SECRET,
     PROJECT,
     SESSION_SECRET,
@@ -838,6 +840,8 @@ def register_task_definition(
         "google_client_id": cfg.get("google_client_id", ""),
         "sharing_url": cfg.get("sharing_url") or "",
         "open_agent_backend": "langgraph",
+        # Notes: DynamoDB is the source of truth, S3 is mirrored from it.
+        "dynamodb_table": cfg.get("dynamodb_table") or NOTES_TABLE,
     }
     for key in (
         "cognito_user_pool_id",
@@ -1317,6 +1321,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         raise RuntimeError(f"Empty origin header secret: {ORIGIN_HEADER_SECRET}")
 
     ensure_sg_ingress(c["ec2"], network.security_groups[0], network.alb_sg)
+
+    logger.info("[0.4/7] DynamoDB notes table (source of truth; S3 mirrors from it)")
+    os.environ["NOTES_DDB_TABLE"] = str(cfg.get("dynamodb_table") or NOTES_TABLE)
+    from application import note_store
+
+    note_store.reset_clients()
+    logger.info("  %s", note_store.ensure_table())
+    cfg["dynamodb_table"] = note_store.table_name()
+    save_config(cfg)
 
     logger.info("[0.5/7] S3 Files app-data storage (ECS /mnt/app-data)")
     ecs_task_role = f"role-ecs-task-for-{PROJECT}-{region}"

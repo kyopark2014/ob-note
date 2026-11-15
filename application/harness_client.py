@@ -293,8 +293,13 @@ def _image_format_from_name(name: str) -> str:
 
 
 def _read_vault_bytes(path: str) -> bytes:
-    from application import vault_backend
+    from application import note_store, vault_backend
 
+    if note_store.enabled():
+        data = note_store.read_bytes(path)
+        if data is None:
+            raise FileNotFoundError(f"Not found: {path}")
+        return data
     target = vault_backend.resolve_vault_path(path)
     if not target.is_file():
         raise FileNotFoundError(f"Not found: {path}")

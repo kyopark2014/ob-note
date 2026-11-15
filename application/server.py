@@ -60,6 +60,17 @@ async def lifespan(app: FastAPI):
         )
     except Exception:
         logger.debug("App-data backend probe failed", exc_info=True)
+    try:
+        from application import note_store
+
+        if note_store.enabled():
+            note_store.start_background_mirror()
+            logger.info(
+                "Notes: DynamoDB table=%s is the source of truth; S3 mirrors from it",
+                note_store.table_name(),
+            )
+    except Exception:
+        logger.exception("Failed to start DynamoDB S3 mirror")
     if mode == "s3":
         try:
             from application import vault_sync

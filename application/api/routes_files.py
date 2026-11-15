@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from application.api.routes_auth import require_user_id
 from application import (
+    note_store,
     notes_db,
     vault_backend,
     vault_clearing,
@@ -262,9 +263,327 @@ def _mcp_note_html(content: str, rel: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# DynamoDB mode: ``note_store`` is the source of truth; S3 and the local working
+# copy are derived from it (see docs/DYNAMODB_NOTES.md).
+# ---------------------------------------------------------------------------
+
+
+def _ddb_attach_meta(nodes: list[dict[str, Any]], meta: dict[str, dict[str, Any]]) -> None:
+    for node in nodes:
+        if node.get("type") == "folder":
+            _ddb_attach_meta(node.get("children") or [], meta)
+            continue
+        row = meta.get(node.get("path") or "")
+        if row:
+            node["note_id"] = row.get("note_id")
+            node["title"] = row.get("title") or ""
+            node["size_bytes"] = int(row.get("size_bytes") or 0)
+            node["created_at"] = row.get("created_at")
+            node["updated_at"] = row.get("updated_at")
+
+
+def _ddb_tree() -> dict:
+    note_store.restore_settings()
+    items = note_store.list_items()
+    rels = [
+        f"{i['path']}/{FOLDER_KEEP_NAME}" if i.get("kind") == note_store.KIND_FOLDER else i["path"]
+        for i in items
+    ]
+    children = vault_sync.build_tree_from_rels(rels)
+    _ddb_attach_meta(children, {i["path"]: i for i in items if i.get("note_id")})
+    return {
+        "root": ".",
+        "mode": vault_backend.backend_mode(),
+        "source": "dynamodb",
+        "children": children,
+    }
+
+
+def _iso_ts(value: Any) -> float:
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _ddb_list_files(prefix: str, ext: str) -> dict:
+    cleaned = note_store.nfc(prefix)
+    if ".." in cleaned.split("/"):
+        raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+    vault_index.ensure_index()
+    exact = note_store.get(cleaned) if cleaned else None
+    single = exact is not None and exact.get("kind") != note_store.KIND_FOLDER
+    items = [exact] if single else note_store.list_items(cleaned)
+    want_ext = (ext or "md").lower().lstrip(".")
+    all_ext = want_ext in {"*", "all", ""}
+    files: list[dict[str, Any]] = []
+    for it in items:
+        if it.get("kind") == note_store.KIND_FOLDER:
+            continue
+        rel = it["path"]
+        parts = rel.split("/")
+        if any(part in HIDDEN_SKIP or part == ".vault" for part in parts):
+            continue
+        suffix = Path(rel).suffix.lower()
+        if not single and not all_ext and suffix.lstrip(".") != want_ext:
+            continue
+        entry: dict[str, Any] = {
+            "path": rel,
+            "name": parts[-1],
+            "size": int(it.get("size_bytes") or 0),
+            "mtime": _iso_ts(it.get("updated_at")),
+        }
+        if suffix == ".md" and it.get("note_id"):
+            entry["note_id"] = it["note_id"]
+            entry["title"] = it.get("title") or ""
+            entry["size_bytes"] = int(it.get("size_bytes") or 0)
+            entry["created_at"] = it.get("created_at")
+            entry["updated_at"] = it.get("updated_at")
+            meta = vault_index.get_meta(rel)
+            preview = (meta.body_preview if meta else "") or ""
+            if preview:
+                entry["body_preview"] = preview
+                entry["snippet"] = preview
+        files.append(entry)
+    if single:
+        return {"prefix": cleaned, "ext": ext, "files": files}
+    return {"prefix": cleaned, "ext": ext, "count": len(files), "files": files}
+
+
+def _ddb_note_fields(row: dict[str, Any] | None) -> dict[str, Any]:
+    row = row or {}
+    return {
+        "note_id": row.get("note_id"),
+        "title": row.get("title"),
+        "size_bytes": row.get("size_bytes"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "created": row.get("created"),
+    }
+
+
+def _ddb_reindex(*paths: str) -> None:
+    for rel in paths:
+        if notes_db.is_markdown_path(rel):
+            vault_index.update_note(rel)
+    vault_index.rebuild_index()
+
+
+def _ddb_write(body: "WriteBody") -> dict:
+    src_rel = note_store.nfc(body.path)
+    if not src_rel or ".." in src_rel.split("/"):
+        raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+    text = body.content
+    final_rel = _retitle_rel(src_rel, text) if body.sync_filename else src_rel
+    renamed_from: str | None = None
+    if final_rel != src_rel:
+        renamed_from = src_rel
+        # Untitled -> real title: the row moves, so note_id (and its chat) is kept.
+        moved = note_store.rename(src_rel, final_rel)
+        if moved:
+            notes_db._forget_chat(moved.get("dropped_note_ids") or [])
+    try:
+        row = note_store.put_text(final_rel, text)
+    except IsADirectoryError as e:
+        raise HTTPException(status_code=400, detail="Path is a directory") from e
+    if notes_db.is_markdown_path(final_rel):
+        if renamed_from:
+            vault_index.remove_note(renamed_from)
+        _ddb_reindex(final_rel)
+    if renamed_from:
+        vault_share.rewrite_share_paths(src_rel, final_rel)
+        vault_order.notify_renamed(src_rel, final_rel)
+    meta = vault_index.get_meta(final_rel)
+    return {
+        "ok": True,
+        "path": final_rel,
+        "renamed_from": renamed_from,
+        "word_count": meta.word_count if meta else None,
+        "char_count": meta.char_count if meta else None,
+        **_ddb_note_fields(row),
+    }
+
+
+def _ddb_append(body: "AppendBody") -> dict:
+    rel = note_store.nfc(body.path)
+    try:
+        row = note_store.append_text(
+            rel, body.content or "", create=body.create, separator=body.separator
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail="File not found") from e
+    except IsADirectoryError as e:
+        raise HTTPException(status_code=400, detail="Path is a directory") from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if notes_db.is_markdown_path(rel):
+        _ddb_reindex(rel)
+    meta = vault_index.get_meta(rel)
+    return {
+        "ok": True,
+        "path": body.path,
+        "appended": len(body.content or ""),
+        "word_count": meta.word_count if meta else None,
+        "char_count": meta.char_count if meta else None,
+        **_ddb_note_fields(row),
+    }
+
+
+def _ddb_rename(body: "RenameBody") -> dict:
+    from_rel = note_store.nfc(body.from_path)
+    to_rel = note_store.nfc(body.to_path)
+    for rel in (from_rel, to_rel):
+        if not rel or ".." in rel.split("/"):
+            raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+    if from_rel == to_rel:
+        return {"ok": True, "from": from_rel, "to": to_rel, "companion_images": None}
+    source = note_store.get(from_rel)
+    if source is None and not note_store.is_dir(from_rel):
+        found = note_store.find(from_rel)  # Obsidian-style unique basename fallback
+        if found is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        from_rel = found["path"]
+        source = found
+    was_file = source is not None and source.get("kind") != note_store.KIND_FOLDER
+    try:
+        res = note_store.rename(from_rel, to_rel)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if res is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    notes_db._forget_chat(res.get("dropped_note_ids") or [])
+    # Filename -> H1 (mirrors H1 -> filename on save).
+    if was_file and notes_db.is_markdown_path(to_rel) and Path(from_rel).stem != Path(to_rel).stem:
+        try:
+            text = note_store.read_text(to_rel) or ""
+            synced = _replace_or_set_h1(text, Path(to_rel).stem)
+            if synced != text:
+                note_store.put_text(to_rel, synced)
+        except Exception:
+            logger.exception("H1 sync after rename failed for %s", to_rel)
+    for old, new in res.get("moved") or []:
+        if notes_db.is_markdown_path(old):
+            vault_index.remove_note(old)
+    for _old, new in res.get("moved") or []:
+        if notes_db.is_markdown_path(new):
+            vault_index.update_note(new)
+    vault_index.rebuild_index()
+    vault_share.rewrite_share_paths(from_rel, to_rel)
+    vault_order.notify_renamed(from_rel, to_rel)
+    companion_images: str | None = None
+    if (
+        was_file
+        and notes_db.is_markdown_path(to_rel)
+        and vault_companion_assets.parents_differ(from_rel, to_rel)
+    ):
+        schedule = (
+            vault_companion_assets.schedule_copy_companion_images
+            if body.copy_companions
+            else vault_companion_assets.schedule_move_companion_images
+        )
+        if schedule(from_rel, to_rel):
+            companion_images = "queued"
+    return {"ok": True, "from": from_rel, "to": to_rel, "companion_images": companion_images}
+
+
+def _ddb_copy(body: "CopyBody") -> dict:
+    src = note_store.nfc(body.from_path)
+    dst = note_store.nfc(body.to_path)
+    for rel in (src, dst):
+        if not rel or ".." in rel.split("/"):
+            raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+    item = note_store.get(src)
+    if item is None and not note_store.is_dir(src):
+        raise HTTPException(status_code=404, detail="Source not found")
+    if item is None or item.get("kind") == note_store.KIND_FOLDER:
+        raise HTTPException(status_code=400, detail="Only files can be copied")
+    if src == dst:
+        return {"ok": True, "from": src, "to": src, "overwritten": False, "companion_images": None}
+    existing = note_store.get(dst)
+    if existing is not None and existing.get("kind") == note_store.KIND_FOLDER:
+        raise HTTPException(status_code=400, detail="Destination is a directory")
+    note_store.copy(src, dst)
+    if notes_db.is_markdown_path(dst):
+        _ddb_reindex(dst)
+    vault_order.notify_copied(dst)
+    companion_images: str | None = None
+    if notes_db.is_markdown_path(dst) and vault_companion_assets.parents_differ(src, dst):
+        if vault_companion_assets.schedule_copy_companion_images(src, dst):
+            companion_images = "queued"
+    return {
+        "ok": True,
+        "from": src,
+        "to": dst,
+        "overwritten": existing is not None,
+        "companion_images": companion_images,
+    }
+
+
+def _ddb_delete(body: "DeleteBody") -> dict:
+    rel = note_store.nfc(body.path)
+    if not rel or ".." in rel.split("/"):
+        raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+    if note_store.get(rel) is None and not note_store.is_dir(rel):
+        raise HTTPException(status_code=404, detail="Not found")
+    # Revoke public shares first so no token is left pointing at a deleted note.
+    vault_share.remove_shares_for_path(body.path)
+    removed = note_store.delete(rel)
+    notes_db._forget_chat([r["note_id"] for r in removed if r.get("note_id")])
+    for r in removed:
+        if r.get("path") and notes_db.is_markdown_path(r["path"]):
+            vault_index.remove_note(r["path"])
+    vault_index.rebuild_index()
+    vault_order.notify_deleted(body.path)
+    return {"ok": True, "path": body.path}
+
+
+def _ddb_unique_copy_path(src: str, *, folder: bool) -> str:
+    parent = str(Path(src).parent).replace("\\", "/")
+    parent = "" if parent == "." else parent
+    base = Path(src).name if folder else Path(src).stem
+    suffix = "" if folder else Path(src).suffix
+    n = 2
+    while True:
+        name = f"{base} {n}{suffix}"
+        candidate = f"{parent}/{name}" if parent else name
+        if note_store.get(candidate) is None and not note_store.is_dir(candidate):
+            return candidate
+        n += 1
+
+
+def _ddb_duplicate(body: "DuplicateBody") -> dict:
+    src = note_store.nfc(body.path)
+    if not src or ".." in src.split("/"):
+        raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+    item = note_store.get(src)
+    is_folder = item is None and note_store.is_dir(src) or (
+        item is not None and item.get("kind") == note_store.KIND_FOLDER
+    )
+    if item is None and not is_folder:
+        raise HTTPException(status_code=404, detail="Not found")
+    dst = _ddb_unique_copy_path(src, folder=is_folder)
+    if is_folder:
+        note_store.mkdir(dst)
+        for it in note_store.list_items(src):
+            target = dst + it["path"][len(src):]
+            if it.get("kind") == note_store.KIND_FOLDER:
+                note_store.mkdir(target)
+            else:
+                note_store.copy(it["path"], target)
+    else:
+        note_store.copy(src, dst)  # a duplicate gets a fresh note_id
+    vault_index.rebuild_index()
+    return {"ok": True, "from": body.path, "to": dst}
+
+
 @router.get("/tree")
 def get_tree(request: Request) -> dict:
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_tree()
     notes_db.ensure_db()
     mode = vault_backend.backend_mode()
     if mode == "s3":
@@ -319,6 +638,8 @@ def list_files(
 ) -> dict:
     """Flat list of vault files (default: ``*.md``). Use ``ext=*`` for all files."""
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_list_files(prefix, ext)
     if vault_backend.backend_mode() == "s3":
         vault_backend.sync_from_s3()
     root = vault_backend.vault_root()
@@ -421,9 +742,119 @@ def _require_local_file(path: str) -> Path:
     )
 
 
+def _read_payload(
+    *,
+    rel: str,
+    content: str,
+    suffix: str,
+    note_row: dict[str, Any] | None,
+    size_bytes: int,
+    html: bool,
+) -> dict[str, Any]:
+    is_md = suffix in {".md", ".markdown"}
+    meta = vault_index.get_meta(rel) if is_md else None
+    backlinks = vault_index.backlinks(rel) if meta else []
+    title = (
+        (note_row or {}).get("title")
+        or (meta.title if meta else Path(rel).stem)
+    )
+    payload: dict[str, Any] = {
+        "path": rel,
+        "content": content,
+        "word_count": meta.word_count if meta else len(content.split()),
+        "char_count": meta.char_count if meta else len(content),
+        "backlinks": backlinks,
+        "title": title,
+        "tags": meta.tags if meta else [],
+        "note_id": (note_row or {}).get("note_id"),
+        "size_bytes": (note_row or {}).get("size_bytes", size_bytes),
+        "created_at": (note_row or {}).get("created_at"),
+        "updated_at": (note_row or {}).get("updated_at"),
+    }
+    # HTML is for MCP/share consumers only — the web editor renders TipTap client-side.
+    if html and is_md:
+        try:
+            payload["content_html"] = _mcp_note_html(content, rel)
+        except Exception:
+            logger.exception("content_html render failed for %s", rel)
+    return payload
+
+
+def _ddb_read_file(path: str, *, html: bool = False) -> dict:
+    """Read a note from DynamoDB in one GetItem when possible (no unused HTML)."""
+    cleaned = note_store.nfc(path)
+    if not cleaned or ".." in cleaned.split("/"):
+        raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+    suffix = Path(cleaned).suffix.lower()
+    if suffix not in {".md", ".markdown", ".txt", ".json", ".csv", ".yaml", ".yml"}:
+        raise HTTPException(status_code=400, detail="Use /raw for binary files")
+
+    item = note_store.get(cleaned, content=True)
+    if item is None or item.get("kind") == note_store.KIND_FOLDER:
+        found = note_store.find(cleaned)
+        if found is not None and found.get("path") != cleaned:
+            item = note_store.get(found["path"], content=True)
+        else:
+            item = None
+    if item is None or item.get("kind") == note_store.KIND_FOLDER:
+        purged = False
+        if notes_db.is_markdown_path(cleaned) and not vault_sync.remote_file_exists(cleaned):
+            _forget_missing_note(cleaned)
+            purged = True
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "file_not_found", "path": path, "purged": purged},
+        )
+
+    rel = str(item.get("path") or cleaned)
+    if "content" in item:
+        content = str(item["content"])
+        # Keep the disposable local cache warm for graph/share without a second GetItem.
+        try:
+            note_store.warm_cache(
+                rel,
+                content.encode("utf-8"),
+                updated_at=str(item.get("updated_at") or note_store.utc_now()),
+                version=int(item.get("version") or 0) or None,
+            )
+        except Exception:
+            logger.debug("warm_cache after ddb read failed for %s", rel, exc_info=True)
+    else:
+        target = note_store.materialize(rel)
+        if target is None or not target.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "file_not_found", "path": path, "purged": False},
+            )
+        content = target.read_text(encoding="utf-8", errors="replace")
+
+    note_row = {
+        "note_id": item.get("note_id"),
+        "title": item.get("title") or "",
+        "size_bytes": int(item.get("size_bytes") or len(content.encode("utf-8"))),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+    return _read_payload(
+        rel=rel,
+        content=content,
+        suffix=Path(rel).suffix.lower(),
+        note_row=note_row,
+        size_bytes=int(note_row["size_bytes"] or 0),
+        html=html,
+    )
+
+
 @router.get("/read")
-def read_file(request: Request, path: str) -> dict:
+def read_file(
+    request: Request,
+    path: str,
+    html: int = Query(0, description="Include content_html (MCP/share); off for web UI"),
+) -> dict:
     require_user_id(request)
+    want_html = bool(html)
+    if note_store.enabled():
+        return _ddb_read_file(path, html=want_html)
     try:
         target = _require_local_file(path)
     except HTTPException:
@@ -438,35 +869,17 @@ def read_file(request: Request, path: str) -> dict:
         rel = target.resolve().relative_to(vault_backend.vault_root().resolve()).as_posix()
     except Exception:
         rel = path
-    meta = vault_index.get_meta(rel) if target.suffix.lower() == ".md" else None
-    backlinks = vault_index.backlinks(rel) if meta else []
     note_row = (
-        notes_db.ensure_note_for_path(rel) if target.suffix.lower() == ".md" else None
+        notes_db.ensure_note_for_path(rel) if target.suffix.lower() in {".md", ".markdown"} else None
     )
-    title = (
-        (note_row or {}).get("title")
-        or (meta.title if meta else Path(rel).stem)
+    return _read_payload(
+        rel=rel,
+        content=content,
+        suffix=target.suffix.lower(),
+        note_row=note_row,
+        size_bytes=int((note_row or {}).get("size_bytes") or target.stat().st_size),
+        html=want_html,
     )
-    payload: dict[str, Any] = {
-        "path": rel,
-        "content": content,
-        "word_count": meta.word_count if meta else len(content.split()),
-        "char_count": meta.char_count if meta else len(content),
-        "backlinks": backlinks,
-        "title": title,
-        "tags": meta.tags if meta else [],
-        "note_id": (note_row or {}).get("note_id"),
-        "size_bytes": (note_row or {}).get("size_bytes", target.stat().st_size),
-        "created_at": (note_row or {}).get("created_at"),
-        "updated_at": (note_row or {}).get("updated_at"),
-    }
-    # Same HTML pipeline as public /s/{token} share pages (tables, code, images…).
-    if target.suffix.lower() in {".md", ".markdown"}:
-        try:
-            payload["content_html"] = _mcp_note_html(content, rel)
-        except Exception:
-            logger.exception("content_html render failed for %s", rel)
-    return payload
 
 
 @router.post("/render")
@@ -582,6 +995,19 @@ async def upload_file(
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    if note_store.enabled():
+        saved = note_store.put_bytes(path, data)
+        if notes_db.is_markdown_path(path):
+            _ddb_reindex(path)
+        return {
+            "ok": True,
+            "path": path,
+            "size": len(data),
+            "content_type": content_type or media_type_for_name(target.name),
+            "note_id": saved.get("note_id"),
+            "created": saved.get("created"),
+        }
+
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     retired = vault_backend.retire_nfd_duplicate(path)
@@ -671,12 +1097,16 @@ def _alloc_sibling_md(rel_path: str, stem: str) -> str:
     parent = str(Path(rel).parent).replace("\\", "/")
     if parent == ".":
         parent = ""
+    ddb = note_store.enabled()
     root = vault_backend.vault_root()
     folder = root / parent if parent else root
     for n in range(1, 501):
         name = f"{stem}.md" if n == 1 else f"{stem} {n}.md"
         candidate = f"{parent}/{name}" if parent else name
-        if candidate == rel or not (folder / name).exists():
+        if candidate == rel:
+            return candidate
+        taken = note_store.get(candidate) is not None if ddb else (folder / name).exists()
+        if not taken:
             return candidate
     raise HTTPException(status_code=409, detail="Could not allocate a unique note name")
 
@@ -709,6 +1139,8 @@ def _retitle_rel(src_rel: str, content: str) -> str:
 @router.put("/write")
 def write_file(request: Request, body: WriteBody) -> dict:
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_write(body)
     src_rel = vault_backend._nfc_rel(body.path)
     try:
         src_target = vault_backend.resolve_vault_path(src_rel)
@@ -778,6 +1210,8 @@ def write_file(request: Request, body: WriteBody) -> dict:
 def append_file(request: Request, body: AppendBody) -> dict:
     """Append text to a note (create parent dirs / file when ``create=true``)."""
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_append(body)
     try:
         target = vault_backend.resolve_vault_path(body.path)
     except ValueError as e:
@@ -826,6 +1260,15 @@ def append_file(request: Request, body: AppendBody) -> dict:
 @router.post("/mkdir")
 def mkdir(request: Request, body: MkdirBody) -> dict:
     require_user_id(request)
+    if note_store.enabled():
+        rel = note_store.nfc(body.path)
+        if not rel or ".." in rel.split("/"):
+            raise HTTPException(status_code=400, detail="Path traversal is not allowed")
+        try:
+            note_store.mkdir(rel)
+        except FileExistsError as e:
+            raise HTTPException(status_code=400, detail="Path is a file") from e
+        return {"ok": True, "path": body.path}
     try:
         target = vault_backend.resolve_vault_path(body.path)
     except ValueError as e:
@@ -845,6 +1288,8 @@ def mkdir(request: Request, body: MkdirBody) -> dict:
 @router.post("/rename")
 def rename(request: Request, body: RenameBody) -> dict:
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_rename(body)
     # Sidebar paths can be NFD (decomposed Hangul from S3 keys). Storage and
     # the S3 put must use NFC, or Linux writes the file into a twin folder
     # while the upload still looks at the folder the user dropped on.
@@ -944,6 +1389,8 @@ def rename(request: Request, body: RenameBody) -> dict:
 def copy_path(request: Request, body: CopyBody) -> dict:
     """Copy a file to ``to_path``, overwriting an existing file. Source stays."""
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_copy(body)
     try:
         src = vault_backend.resolve_vault_path(body.from_path)
         dst = vault_backend.resolve_vault_path(body.to_path)
@@ -1001,6 +1448,8 @@ def copy_path(request: Request, body: CopyBody) -> dict:
 @router.post("/delete")
 def delete_path(request: Request, body: DeleteBody) -> dict:
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_delete(body)
     try:
         target = vault_backend.resolve_vault_path(body.path)
     except ValueError as e:
@@ -1069,6 +1518,8 @@ def _unique_copy_path(src: Path) -> Path:
 @router.post("/duplicate")
 def duplicate_path(request: Request, body: DuplicateBody) -> dict:
     require_user_id(request)
+    if note_store.enabled():
+        return _ddb_duplicate(body)
     try:
         src = vault_backend.resolve_vault_path(body.path)
     except ValueError as e:
@@ -1223,7 +1674,7 @@ def sync_status(request: Request) -> dict:
 def sync_from_remote(request: Request) -> dict:
     """Start background sync: flush pending local→S3, then incremental pull."""
     require_user_id(request)
-    if vault_backend.backend_mode() != "s3":
+    if vault_backend.backend_mode() != "s3" and not note_store.enabled():
         return {
             "ok": False,
             "status": "error",

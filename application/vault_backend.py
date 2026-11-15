@@ -388,7 +388,12 @@ def sync_from_s3(*, force: bool = False) -> dict:
     Delegates to vault_sync: never pulls while pending local→S3 ops remain.
     Prefer incremental unless ``force=True``.
     """
-    from application import vault_sync
+    from application import note_store, vault_sync
+
+    if note_store.enabled():
+        # DynamoDB is the source of truth. Nothing is ever pulled back from S3,
+        # which is what used to overwrite files while another operation ran.
+        return {"ok": True, "skipped": True, "source": "dynamodb"}
 
     # Always try to finish outbound ops first so a pull cannot clobber them.
     flush = vault_sync.flush_pending_to_s3()
@@ -440,9 +445,9 @@ def sync_to_s3(rel_path: Optional[str] = None) -> dict:
     Callers (mkdir/write/upload) return as soon as the local write + pending
     queue entry exist so the UI can refresh without waiting on S3.
     """
-    from application import vault_sync
+    from application import note_store, vault_sync
 
-    if backend_mode() != "s3":
+    if backend_mode() != "s3" and not note_store.enabled():
         return {"ok": False, "reason": f"backend={backend_mode()}"}
     if rel_path:
         vault_sync.enqueue_put(rel_path)

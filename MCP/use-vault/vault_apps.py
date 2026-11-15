@@ -140,7 +140,13 @@ def vault_read(actor_id: str, path: str, raw: bool = False) -> CallToolResult:
         uid = _require_actor(actor_id)
         path = vault.normalize_vault_path(path)
         logger.info("vault_read actor_id=%s path=%s raw=%s", uid, path, raw)
-        payload = vault.api_request("GET", "/api/files/read", user_id=uid, query={"path": path})
+        # html=1: MCP App Preview needs content_html; the web UI omits it for speed.
+        payload = vault.api_request(
+            "GET",
+            "/api/files/read",
+            user_id=uid,
+            query={"path": path, "html": "1"},
+        )
         text = str(payload.get("content") or "") if raw else None
         return _result("note", payload, text)
     except Exception as e:

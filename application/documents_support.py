@@ -1595,17 +1595,23 @@ def resolve_documents_markdown_path(
 
 def unique_vault_rel_path(folder: str, stem: str) -> str:
     """Return ``folder/{stem}.md`` or ``folder/{stem}-N.md`` if collision."""
-    from application import vault_backend
+    from application import note_store, vault_backend
+
+    def taken(candidate: str) -> bool:
+        # DynamoDB is authoritative; the local working copy is only a cache and may
+        # not hold a note that already exists (overwriting it would lose data).
+        if note_store.enabled():
+            return note_store.get(candidate) is not None or note_store.is_dir(candidate)
+        return vault_backend.resolve_vault_path(candidate).exists()
 
     base_name = f"{stem}.md"
     rel = f"{folder.rstrip('/')}/{base_name}"
-    target = vault_backend.resolve_vault_path(rel)
-    if not target.exists():
+    if not taken(rel):
         return rel
     n = 2
     while True:
         candidate = f"{folder.rstrip('/')}/{stem}-{n}.md"
-        if not vault_backend.resolve_vault_path(candidate).exists():
+        if not taken(candidate):
             return candidate
         n += 1
         if n > 9999:
@@ -1624,7 +1630,7 @@ def copy_documents_markdown_to_vault(
         FileNotFoundError: source document or markdown missing (caller → 404/400)
         ValueError: invalid kind / empty content
     """
-    from application import notes_db, vault_backend, vault_index
+    from application import note_store, notes_db, vault_backend, vault_index
 
     kind_norm = (kind or "project").strip().lower()
     if kind_norm not in {"project", "drawing"}:
@@ -1674,6 +1680,8 @@ def copy_documents_markdown_to_vault(
     for part in ("OCR", folder):
         folder_path = vault_backend.resolve_vault_path(part)
         folder_path.mkdir(parents=True, exist_ok=True)
+        if note_store.enabled():
+            note_store.mkdir(part)
 
     rel = unique_vault_rel_path(folder, stem)
     target = vault_backend.resolve_vault_path(rel)

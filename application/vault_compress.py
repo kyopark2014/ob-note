@@ -750,6 +750,20 @@ def _run_job(
             progress=_progress(phase="scan", message="파일 목록을 확인하는 중…"),
             persist=True,
         )
+        from application import note_store
+
+        if note_store.enabled():
+            # Zip what S3 holds: finish the DynamoDB -> S3 mirror, then make the local
+            # copy complete (notes + binaries) before reading it.
+            _update(
+                user_id,
+                job_id,
+                message="S3 원본과 동기화를 확인하는 중…",
+                progress=_progress(phase="scan", message="S3 원본과 동기화를 확인하는 중…"),
+            )
+            prepared = note_store.prepare_export(cleaned, user_id=user_id)
+            if not prepared.get("ok"):
+                logger.warning("export prepared with pending S3 items: %s", prepared.get("flush"))
         entries = _collect_entries(src)
         file_total = sum(1 for path, _arc in entries if path is not None)
 
@@ -861,6 +875,14 @@ def start_compress(user_id: str, rel: str = "", *, entire_vault: bool = False) -
         queued_message = "vault 전체 압축을 백그라운드에서 시작합니다."
     else:
         cleaned = clean_vault_rel(rel)
+        from application import note_store
+
+        if note_store.enabled():
+            if not note_store.is_dir(cleaned, user_id=user_id):
+                raise FileNotFoundError("Folder not found")
+            # The local copy is a cache; make sure the folder exists on disk so the
+            # path checks below pass. Contents are completed in the background job.
+            vault_backend.resolve_vault_path(cleaned).mkdir(parents=True, exist_ok=True)
         src = resolve_compress_source(cleaned)
         base_name = zip_name_for(cleaned)
         scope = "folder"

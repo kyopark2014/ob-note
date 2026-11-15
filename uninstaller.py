@@ -335,6 +335,20 @@ def empty_per_user_vaults(s3, bucket: str) -> int:
     return deleted
 
 
+def delete_notes_table(region: str, table: str) -> None:
+    """Drop the notes table. Deletion protection is on by design, so lift it first."""
+    ddb = boto3.client("dynamodb", region_name=region)
+    try:
+        ddb.update_table(TableName=table, DeletionProtectionEnabled=False)
+        ddb.delete_table(TableName=table)
+        logger.info("  ✓ Deleted DynamoDB table %s", table)
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            logger.info("  DynamoDB table %s not found", table)
+        else:
+            logger.warning("  DynamoDB table delete failed: %s", e)
+
+
 def delete_s3_bucket_fully(s3, bucket: str) -> None:
     logger.info("  Emptying and deleting bucket %s …", bucket)
     try:
@@ -513,6 +527,7 @@ def delete_stack(
     bucket: str,
     keep_s3: bool,
     purge_vault_prefix: bool,
+    notes_table: str = "",
 ) -> None:
     logger.info("[8/9] Deleting network / cluster / IAM / S3")
 
@@ -554,6 +569,13 @@ def delete_stack(
             logger.info("  Keeping S3 bucket %s", target)
     else:
         delete_s3_bucket_fully(s3, target)
+
+    # DynamoDB holds the notes (S3 is only their mirror), so it follows the same rule as
+    # the bucket: kept with --keep-s3 unless the vault prefix is explicitly purged.
+    if keep_s3 and not purge_vault_prefix:
+        logger.info("  Keeping DynamoDB notes table (--keep-s3)")
+    else:
+        delete_notes_table(region, notes_table or PROJECT)
 
 
 def clean_local_config(cfg: dict[str, Any]) -> None:
@@ -670,6 +692,7 @@ def main() -> int:
             bucket=bucket,
             keep_s3=args.keep_s3,
             purge_vault_prefix=args.purge_vault_prefix,
+            notes_table=str(cfg.get("dynamodb_table") or ""),
         )
         clean_local_config(cfg)
 

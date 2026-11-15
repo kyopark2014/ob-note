@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from application import vault_backend
+from application import note_store, vault_backend
 
 logger = logging.getLogger("notes_db")
 
@@ -137,7 +137,7 @@ def _select_note(conn: sqlite3.Connection, rel: str) -> Optional[sqlite3.Row]:
     return None
 
 
-def ensure_db() -> None:
+def _sqlite_ensure_db() -> None:
     with _lock:
         conn = _connect()
         try:
@@ -147,7 +147,7 @@ def ensure_db() -> None:
             conn.close()
 
 
-def is_empty() -> bool:
+def _sqlite_is_empty() -> bool:
     with _lock:
         conn = _connect()
         try:
@@ -158,7 +158,7 @@ def is_empty() -> bool:
             conn.close()
 
 
-def get_by_path(path: str) -> Optional[dict[str, Any]]:
+def _sqlite_get_by_path(path: str) -> Optional[dict[str, Any]]:
     rel = _norm_rel(path)
     if not rel:
         return None
@@ -172,7 +172,7 @@ def get_by_path(path: str) -> Optional[dict[str, Any]]:
             conn.close()
 
 
-def get_by_id(note_id: str) -> Optional[dict[str, Any]]:
+def _sqlite_get_by_id(note_id: str) -> Optional[dict[str, Any]]:
     nid = (note_id or "").strip()
     if not nid:
         return None
@@ -186,7 +186,7 @@ def get_by_id(note_id: str) -> Optional[dict[str, Any]]:
             conn.close()
 
 
-def list_notes(*, order: str = "updated_at") -> list[dict[str, Any]]:
+def _sqlite_list_notes(*, order: str = "updated_at") -> list[dict[str, Any]]:
     col = "updated_at" if order == "updated_at" else "path"
     with _lock:
         conn = _connect()
@@ -205,7 +205,7 @@ def list_notes(*, order: str = "updated_at") -> list[dict[str, Any]]:
             conn.close()
 
 
-def upsert_note(
+def _sqlite_upsert_note(
     path: str,
     *,
     content: Optional[str] = None,
@@ -296,6 +296,8 @@ def upsert_note(
 
 
 def _schedule_persist() -> None:
+    if note_store.enabled():
+        return
     try:
         from application import vault_db_persistence
 
@@ -361,7 +363,7 @@ def _forget_chat(note_ids: list[str]) -> None:
         logger.exception("agent_chat cleanup after note drop failed")
 
 
-def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
+def _sqlite_rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
     """Rename a single note path, or remap all notes under a folder prefix.
 
     The original ``note_id`` is kept. A second row already registered at the
@@ -371,7 +373,7 @@ def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
     src = _norm_rel(from_path)
     dst = _norm_rel(to_path)
     if not src or not dst or _nfc_rel(src) == _nfc_rel(dst):
-        return get_by_path(dst) if dst else None
+        return _sqlite_get_by_path(dst) if dst else None
 
     now = _utc_now()
     dropped: list[str] = []
@@ -450,7 +452,7 @@ def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
     return moved
 
 
-def rebind_note_path(
+def _sqlite_rebind_note_path(
     from_path: str,
     to_path: str,
     *,
@@ -466,21 +468,21 @@ def rebind_note_path(
     if not dst or not is_markdown_path(dst):
         return None
     if src and src != dst:
-        rename_note(src, dst)
+        _sqlite_rename_note(src, dst)
     try:
-        row = upsert_note(dst, content=content)
+        row = _sqlite_upsert_note(dst, content=content)
     except Exception:
         logger.exception("notes_db rebind failed %s -> %s", src, dst)
-        row = get_by_path(dst)
+        row = _sqlite_get_by_path(dst)
     if src and src != dst:
-        leftover = get_by_path(src)
+        leftover = _sqlite_get_by_path(src)
         kept = (row or {}).get("note_id")
         if leftover and leftover.get("note_id") != kept:
-            delete_note(src)
+            _sqlite_delete_note(src)
     return row
 
 
-def delete_note(path: str) -> int:
+def _sqlite_delete_note(path: str) -> int:
     """Delete a note or all notes under a folder. Returns removed row count."""
     rel = _norm_rel(path)
     if not rel:
@@ -515,7 +517,7 @@ def delete_note(path: str) -> int:
     return int(deleted)
 
 
-def sync_from_filesystem() -> dict[str, int]:
+def _sqlite_sync_from_filesystem() -> dict[str, int]:
     """Reconcile DB with on-disk ``*.md`` (add missing, refresh, drop orphans)."""
     root = vault_backend.vault_root()
     on_disk: dict[str, Path] = {}
@@ -600,12 +602,12 @@ def sync_from_filesystem() -> dict[str, int]:
     return {"added": added, "updated": updated, "removed": removed, "total": len(on_disk)}
 
 
-def ensure_note_for_path(path: str) -> Optional[dict[str, Any]]:
+def _sqlite_ensure_note_for_path(path: str) -> Optional[dict[str, Any]]:
     """Return DB row for a markdown path, creating one if the file exists."""
     rel = _norm_rel(path)
     if not is_markdown_path(rel):
         return None
-    row = get_by_path(rel)
+    row = _sqlite_get_by_path(rel)
     if row:
         return row
     try:
@@ -614,4 +616,168 @@ def ensure_note_for_path(path: str) -> Optional[dict[str, Any]]:
         return None
     if not target.is_file():
         return None
-    return upsert_note(rel)
+    return _sqlite_upsert_note(rel)
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB mode: ``note_store`` is the registry. The SQLite code above is the
+# legacy path and is only used when DynamoDB is not configured.
+# ---------------------------------------------------------------------------
+
+
+def _ddb() -> bool:
+    return note_store.enabled()
+
+
+def _row(item: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Registry-shaped dict (same keys the SQLite rows had)."""
+    if not item or item.get("kind") == note_store.KIND_FOLDER:
+        return None
+    return {
+        "note_id": item.get("note_id"),
+        "title": item.get("title") or "",
+        "path": item.get("path"),
+        "size_bytes": int(item.get("size_bytes") or 0),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+
+
+def ensure_db() -> None:
+    if not _ddb():
+        return _sqlite_ensure_db()
+
+
+def is_empty() -> bool:
+    if _ddb():
+        return not any(
+            i.get("note_id") for i in note_store.list_items()
+        )
+    return _sqlite_is_empty()
+
+
+def get_by_path(path: str) -> Optional[dict[str, Any]]:
+    if not _ddb():
+        return _sqlite_get_by_path(path)
+    rel = _norm_rel(path)
+    if not rel or not is_markdown_path(rel):
+        return None
+    return _row(note_store.get(rel))
+
+
+def get_by_id(note_id: str) -> Optional[dict[str, Any]]:
+    if not _ddb():
+        return _sqlite_get_by_id(note_id)
+    return _row(note_store.get_by_note_id(note_id))
+
+
+def list_notes(*, order: str = "updated_at") -> list[dict[str, Any]]:
+    if not _ddb():
+        return _sqlite_list_notes(order=order)
+    rows = [r for i in note_store.list_items() if i.get("note_id") and (r := _row(i))]
+    if order == "updated_at":
+        rows.sort(key=lambda r: r["updated_at"] or "", reverse=True)
+    else:
+        rows.sort(key=lambda r: (r["path"] or "").lower())
+    return rows
+
+
+def upsert_note(
+    path: str,
+    *,
+    content: Optional[str] = None,
+    size_bytes: Optional[int] = None,
+    title: Optional[str] = None,
+    note_id: Optional[str] = None,
+    touch_created: bool = False,
+) -> dict[str, Any]:
+    if not _ddb():
+        return _sqlite_upsert_note(
+            path,
+            content=content,
+            size_bytes=size_bytes,
+            title=title,
+            note_id=note_id,
+            touch_created=touch_created,
+        )
+    rel = _norm_rel(path)
+    if not is_markdown_path(rel):
+        raise ValueError("notes_db only tracks markdown notes")
+    existing = note_store.get(rel)
+    if existing is not None and existing.get("kind") != note_store.KIND_FOLDER:
+        same = content is None or (
+            existing.get("md5") == note_store._md5(content.encode("utf-8"))
+        )
+        if same:
+            out = _row(existing) or {}
+            out["created"] = False
+            return out
+    if content is None:
+        # Legacy writers drop the file on disk first; adopt it into DynamoDB.
+        saved = note_store.ingest_local(rel)
+        if saved is None:
+            saved = note_store.put_text(rel, "", note_id=note_id)
+    else:
+        saved = note_store.put_text(rel, content, note_id=note_id)
+    out = _row(note_store.get(rel)) or {}
+    out["created"] = bool(saved.get("created"))
+    return out
+
+
+def rename_note(from_path: str, to_path: str) -> Optional[dict[str, Any]]:
+    if not _ddb():
+        return _sqlite_rename_note(from_path, to_path)
+    src, dst = _norm_rel(from_path), _norm_rel(to_path)
+    if not src or not dst or _nfc_rel(src) == _nfc_rel(dst):
+        return get_by_path(dst) if dst else None
+    res = note_store.rename(src, dst)
+    if res is None:
+        return None
+    _forget_chat(res.get("dropped_note_ids") or [])
+    return _row(res.get("item"))
+
+
+def rebind_note_path(
+    from_path: str,
+    to_path: str,
+    *,
+    content: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    if not _ddb():
+        return _sqlite_rebind_note_path(from_path, to_path, content=content)
+    src, dst = _norm_rel(from_path), _norm_rel(to_path)
+    if not dst or not is_markdown_path(dst):
+        return None
+    if src and src != dst:
+        rename_note(src, dst)
+    row = upsert_note(dst, content=content)
+    return row
+
+
+def delete_note(path: str) -> int:
+    if not _ddb():
+        return _sqlite_delete_note(path)
+    rel = _norm_rel(path)
+    if not rel:
+        return 0
+    removed = note_store.delete(rel)
+    ids = [r["note_id"] for r in removed if r.get("note_id")]
+    _forget_chat(ids)
+    return len(ids)
+
+
+def sync_from_filesystem() -> dict[str, int]:
+    if not _ddb():
+        return _sqlite_sync_from_filesystem()
+    # DynamoDB already is the registry; there is nothing to reconcile from disk.
+    # (Deliberately no query here: this runs after every write via rebuild_index.)
+    return {"added": 0, "updated": 0, "removed": 0, "total": 0}
+
+
+def ensure_note_for_path(path: str) -> Optional[dict[str, Any]]:
+    if not _ddb():
+        return _sqlite_ensure_note_for_path(path)
+    rel = _norm_rel(path)
+    if not is_markdown_path(rel):
+        return None
+    return get_by_path(rel)

@@ -1,5 +1,10 @@
 """Durable pending S3 vault ops + flush / incremental pull.
 
+When DynamoDB mode is on (``note_store.enabled()``) the public functions at the
+bottom of this module delegate to ``note_store``: DynamoDB is the source of truth,
+S3 is mirrored from it, and there is no S3 -> local pull. The ``_legacy_*``
+functions are the original local<->S3 queue and only run without DynamoDB.
+
 Pending ops survive process restart via ``.vault/pending_s3_ops.json`` (also
 mirrored to S3 so ECS task replacement can resume). Sync-from-S3 is blocked
 until the pending upload/delete queue is empty.
@@ -135,7 +140,7 @@ def _merge_ops(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> list[dict[st
     return ops
 
 
-def load_queue(*, hydrate_from_s3: bool = False) -> dict[str, Any]:
+def _legacy_load_queue(*, hydrate_from_s3: bool = False) -> dict[str, Any]:
     with _queue_lock:
         local = _load_local_queue()
         if hydrate_from_s3 and vault_backend.backend_mode() == "s3":
@@ -147,7 +152,7 @@ def load_queue(*, hydrate_from_s3: bool = False) -> dict[str, Any]:
         return local
 
 
-def pending_count() -> int:
+def _legacy_pending_count() -> int:
     return len(load_queue().get("ops") or [])
 
 
@@ -170,7 +175,7 @@ def _enqueue(op: dict[str, Any], *, mirror: bool = True) -> dict[str, Any]:
         return data
 
 
-def enqueue_put(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
+def _legacy_enqueue_put(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
     rel = (rel_path or "").replace("\\", "/").lstrip("/")
     if not rel or rel.startswith(".vault/pending"):
         return load_queue()
@@ -185,7 +190,7 @@ def enqueue_put(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
     )
 
 
-def enqueue_delete(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
+def _legacy_enqueue_delete(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
     rel = (rel_path or "").replace("\\", "/").lstrip("/")
     if not rel:
         return load_queue()
@@ -200,7 +205,7 @@ def enqueue_delete(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
     )
 
 
-def enqueue_put_tree(rel_dir: str = "") -> dict[str, Any]:
+def _legacy_enqueue_put_tree(rel_dir: str = "") -> dict[str, Any]:
     """Enqueue put for every file under rel_dir (or whole vault)."""
     rel_dir = unicodedata.normalize("NFC", (rel_dir or "").replace("\\", "/").lstrip("/"))
     root = vault_backend.vault_root()
@@ -221,7 +226,7 @@ def enqueue_put_tree(rel_dir: str = "") -> dict[str, Any]:
     return data
 
 
-def enqueue_delete_tree(rel_dir: str) -> dict[str, Any]:
+def _legacy_enqueue_delete_tree(rel_dir: str) -> dict[str, Any]:
     rel_dir = unicodedata.normalize("NFC", (rel_dir or "").replace("\\", "/").lstrip("/"))
     root = vault_backend.vault_root()
     base = root / rel_dir
@@ -498,7 +503,7 @@ def _commit_flushed_ops(snapshot: list[dict[str, Any]], failed: list[dict[str, A
         _mirror_pending_to_s3(data)
 
 
-def flush_pending_to_s3(
+def _legacy_flush_pending_to_s3(
     *,
     on_progress: Optional[Any] = None,
 ) -> dict[str, Any]:
@@ -615,7 +620,7 @@ def flush_pending_to_s3(
         }
 
 
-def list_remote_vault_rels(*, include_vault_meta: bool = False) -> list[str]:
+def _legacy_list_remote_vault_rels(*, include_vault_meta: bool = False) -> list[str]:
     """Return case-sensitive vault-relative object keys from S3 (files only)."""
     if vault_backend.backend_mode() != "s3":
         return []
@@ -656,7 +661,7 @@ def _path_key_candidates(rel: str) -> list[str]:
     return out
 
 
-def ensure_local_file(rel: str) -> Optional[Path]:
+def _legacy_ensure_local_file(rel: str) -> Optional[Path]:
     """Return an on-disk file for ``rel``, downloading from S3 when needed.
 
     In S3 mode the file tree is built from remote keys, so a note can appear in
@@ -713,7 +718,7 @@ def remote_file_exists(rel: str) -> bool:
     return resolve_remote_rel(rel) is not None
 
 
-def resolve_remote_rel(rel: str) -> Optional[str]:
+def _legacy_resolve_remote_rel(rel: str) -> Optional[str]:
     """S3 key relative to the user vault that matches ``rel``.
 
     Whole-path NFC and NFD are tried first. A key whose segments mix the two
@@ -924,7 +929,7 @@ def collapse_nfc_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [merged[key] for key in order]
 
 
-def sync_from_s3_incremental(
+def _legacy_sync_from_s3_incremental(
     *,
     force: bool = False,
     on_progress: Optional[Any] = None,
@@ -1159,7 +1164,7 @@ def _prune_local_not_in_remote(root: Path, remote_exact: set[str]) -> int:
     return pruned
 
 
-def sync_now(
+def _legacy_sync_now(
     *,
     force_download: bool = False,
     on_progress: Optional[Any] = None,
@@ -1254,7 +1259,7 @@ _flush_bg_requested: set[str] = set()
 _flush_bg_reconcile: set[str] = set()
 
 
-def schedule_flush_pending(*, reconcile_casing: bool = False) -> dict[str, Any]:
+def _legacy_schedule_flush_pending(*, reconcile_casing: bool = False) -> dict[str, Any]:
     """Enqueue a background pending→S3 flush without blocking the request.
 
     Rapid mkdir/write/rename calls coalesce onto one worker. Local vault +
@@ -1464,10 +1469,10 @@ def _run_sync_job(*, force_download: bool = False, user_id: Optional[str] = None
             _job_thread = None
 
 
-def start_sync_job(*, force_download: bool = False) -> dict[str, Any]:
+def _legacy_start_sync_job(*, force_download: bool = False) -> dict[str, Any]:
     """Queue a background sync job (no-op if already running)."""
     global _job_thread
-    if vault_backend.backend_mode() != "s3":
+    if vault_backend.backend_mode() != "s3" and not _ddb():
         return {
             "status": "error",
             "ok": False,
@@ -1516,3 +1521,243 @@ def start_sync_job(*, force_download: bool = False) -> dict[str, Any]:
         "message": "Vault 동기화를 백그라운드에서 시작합니다…",
         "pending": pending_count(),
     }
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB mode: thin compatibility layer over ``note_store``.
+# Legacy writers still "write the local file, then enqueue_put(rel)"; in this mode
+# enqueue_put commits that file to DynamoDB immediately, and S3 follows from there.
+# ---------------------------------------------------------------------------
+
+
+def _ddb() -> bool:
+    from application import note_store
+
+    return note_store.enabled()
+
+
+def _is_settings(rel: str) -> bool:
+    cleaned = (rel or "").replace("\\", "/").lstrip("/")
+    return cleaned == ".vault" or cleaned.startswith(".vault/")
+
+
+def _settings_put(rel: str) -> None:
+    """App settings (``.vault/*``) are not notes: keep them as plain S3 objects."""
+    bucket, region = vault_backend.s3_bucket_and_region()
+    if not bucket:
+        return
+    cleaned = (rel or "").replace("\\", "/").lstrip("/")
+    path = vault_backend.settings_dir().parent / cleaned
+    if not path.is_file() or cleaned == f".vault/{_PENDING_NAME}":
+        return
+    try:
+        vault_backend._s3_client(region).upload_file(
+            str(path), bucket, vault_backend.s3_prefix() + cleaned
+        )
+    except Exception:
+        logger.exception("Failed to upload settings file %s", cleaned)
+
+
+def _settings_delete(rel: str) -> None:
+    bucket, region = vault_backend.s3_bucket_and_region()
+    if bucket:
+        try:
+            vault_backend._s3_client(region).delete_object(
+                Bucket=bucket, Key=vault_backend.s3_prefix() + rel.lstrip("/")
+            )
+        except Exception:
+            logger.exception("Failed to delete settings file %s", rel)
+
+
+def pending_count() -> int:
+    if _ddb():
+        from application import note_store
+
+        return note_store.pending_count()
+    return _legacy_pending_count()
+
+
+def load_queue(*, hydrate_from_s3: bool = False) -> dict[str, Any]:
+    if _ddb():
+        from application import note_store
+
+        return {"version": 2, "ops": note_store.pending_items()}
+    return _legacy_load_queue(hydrate_from_s3=hydrate_from_s3)
+
+
+def enqueue_put(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_enqueue_put(rel_path, mirror=mirror)
+    from application import note_store
+
+    if _is_settings(rel_path):
+        _settings_put(rel_path)
+    else:
+        note_store.ingest_local(rel_path)
+    return load_queue()
+
+
+def enqueue_delete(rel_path: str, *, mirror: bool = True) -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_enqueue_delete(rel_path, mirror=mirror)
+    from application import note_store
+
+    if _is_settings(rel_path):
+        _settings_delete(rel_path)
+    else:
+        note_store.delete(rel_path)
+    return load_queue()
+
+
+def enqueue_put_tree(rel_dir: str = "") -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_enqueue_put_tree(rel_dir)
+    from application import note_store
+
+    note_store.ingest_local_tree(rel_dir)
+    return load_queue()
+
+
+def enqueue_delete_tree(rel_dir: str) -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_enqueue_delete_tree(rel_dir)
+    from application import note_store
+
+    note_store.delete(rel_dir)
+    return load_queue()
+
+
+def flush_pending_to_s3(*, on_progress: Optional[Any] = None) -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_flush_pending_to_s3(on_progress=on_progress)
+    from application import note_store
+
+    return note_store.flush_outbox(include_future=True, on_progress=on_progress)
+
+
+def schedule_flush_pending(*, reconcile_casing: bool = False) -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_schedule_flush_pending(reconcile_casing=reconcile_casing)
+    from application import note_store
+
+    note_store.schedule_flush()
+    return {"ok": True, "queued": True, "pending": note_store.pending_count()}
+
+
+def list_remote_vault_rels(*, include_vault_meta: bool = False) -> list[str]:
+    if not _ddb():
+        return _legacy_list_remote_vault_rels(include_vault_meta=include_vault_meta)
+    from application import note_store
+
+    return note_store.list_paths()
+
+
+def ensure_local_file(rel: str) -> Optional[Path]:
+    if not _ddb():
+        return _legacy_ensure_local_file(rel)
+    from application import note_store
+
+    if _is_settings(rel):
+        return _legacy_ensure_local_file(rel)
+    return note_store.materialize(rel)
+
+
+def resolve_remote_rel(rel: str) -> Optional[str]:
+    if not _ddb():
+        return _legacy_resolve_remote_rel(rel)
+    from application import note_store
+
+    item = note_store.get(rel)
+    return item["path"] if item is not None and item.get("kind") != note_store.KIND_FOLDER else None
+
+
+def sync_from_s3_incremental(
+    *,
+    force: bool = False,
+    on_progress: Optional[Any] = None,
+) -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_sync_from_s3_incremental(force=force, on_progress=on_progress)
+    from application import note_store
+
+    # No S3 pull in DynamoDB mode: refresh the disposable local cache from DynamoDB.
+    res = note_store.refresh_cache(prune=True, on_progress=on_progress)
+    return {
+        "ok": True,
+        "downloaded": res["written"],
+        "pruned": res["pruned"],
+        "unchanged": res["unchanged"],
+        "source": "dynamodb",
+    }
+
+
+def sync_now(
+    *,
+    force_download: bool = False,
+    on_progress: Optional[Any] = None,
+) -> dict[str, Any]:
+    if not _ddb():
+        return _legacy_sync_now(force_download=force_download, on_progress=on_progress)
+    from application import note_store
+
+    if callable(on_progress):
+        on_progress({"phase": "flush", "message": "S3 원본 반영 상태를 확인합니다…", "pct": 0})
+    flush = note_store.flush_outbox(include_future=True, on_progress=on_progress)
+    if not flush.get("ok"):
+        return {
+            "ok": False,
+            "phase": "flush",
+            "flush": flush,
+            "message": f"S3에 아직 반영되지 않은 항목이 {flush.get('remaining', 0)}개 있습니다. 잠시 후 다시 시도하세요.",
+        }
+    # Edits made directly in S3 (console / CLI) come in after our own changes are mirrored,
+    # so an unmirrored app edit can never be overwritten by an older S3 object.
+    if callable(on_progress):
+        on_progress({"phase": "import", "message": "S3에서 직접 수정한 내용을 확인합니다…", "pct": 0})
+    imported = note_store.import_from_s3(on_progress=on_progress)
+    if imported.get("deleted_note_ids"):
+        try:
+            from application import notes_db
+
+            notes_db._forget_chat(imported["deleted_note_ids"])
+        except Exception:
+            logger.exception("chat cleanup after S3 import failed")
+    pull = sync_from_s3_incremental(force=force_download, on_progress=on_progress)
+    # Report only: Sync never deletes media. Clearing (a separate, user-driven list) does.
+    clearing: Optional[dict[str, Any]] = None
+    try:
+        from application import vault_clearing
+
+        clearing = vault_clearing.count_unreferenced_from_store(vault_clearing.load_kept())
+    except Exception:
+        logger.exception("unreferenced-media count after sync failed")
+    flushed = flush.get("flushed") or 0
+    parts = [f"동기화 완료 · S3 반영 {flushed}"]
+    if imported["added"] or imported["updated"] or imported["deleted"]:
+        parts.append(
+            f"S3 직접수정 반영 추가 {imported['added']} · 변경 {imported['updated']} · 삭제 {imported['deleted']}"
+        )
+    if imported["conflicts"]:
+        parts.append(f"충돌 {len(imported['conflicts'])}건(앱 편집 유지)")
+    if imported["errors"]:
+        parts.append(f"오류 {len(imported['errors'])}건")
+    parts.append(f"로컬 캐시 갱신 {pull.get('downloaded', 0)}")
+    if pull.get("pruned"):
+        parts.append(f"캐시정리 {pull['pruned']}")
+    if clearing and clearing["unreferenced_count"]:
+        parts.append(
+            f"참조되지 않은 미디어 {clearing['unreferenced_count']}개 — Clearing에서 확인하세요"
+        )
+    return {
+        "ok": not imported["errors"],
+        "phase": "done",
+        "flush": flush,
+        "import": imported,
+        "clearing": clearing,
+        "pull": pull,
+        "message": " · ".join(parts),
+    }
+
+
+def start_sync_job(*, force_download: bool = False) -> dict[str, Any]:
+    return _legacy_start_sync_job(force_download=force_download)

@@ -8,12 +8,13 @@ import re
 import threading
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from application import vault_backend
+from application import note_store, vault_backend
 
 logger = logging.getLogger("vault_index")
 
@@ -68,6 +69,10 @@ _lock = threading.RLock()
 _index: dict[str, "NoteMeta"] = {}
 _name_map: dict[str, str] = {}  # normalized name/alias -> relative path
 _built = False
+# DynamoDB mode: remember which version of each note is indexed so a rebuild only
+# re-reads notes that changed, and keep bodies for full-text search.
+_versions: dict[str, int] = {}
+_texts: dict[str, str] = {}
 
 
 @dataclass
@@ -103,6 +108,10 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 def _parse_note(rel: str, path: Path) -> NoteMeta:
     text = path.read_text(encoding="utf-8", errors="replace")
+    return _parse_text(rel, text, path.stat().st_mtime)
+
+
+def _parse_text(rel: str, text: str, mtime: float) -> NoteMeta:
     fm, body = _split_frontmatter(text)
     title = str(fm.get("title") or "").strip()
     if not title:
@@ -150,7 +159,7 @@ def _parse_note(rel: str, path: Path) -> NoteMeta:
         embeds=embeds,
         word_count=len(words),
         char_count=len(text),
-        mtime=path.stat().st_mtime,
+        mtime=mtime,
         body_preview=preview,
     )
 
@@ -260,22 +269,62 @@ def _resolve_prefix_match(key: str, *, from_path: str | None) -> str | None:
     )[0]
 
 
+def _iso_to_ts(value: Any) -> float:
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _rebuild_from_dynamodb() -> None:
+    """Index every ``*.md`` from DynamoDB, re-reading only notes whose version changed."""
+    items = [
+        i for i in note_store.list_items()
+        if i.get("kind") == note_store.KIND_NOTE and str(i.get("path") or "").lower().endswith(".md")
+    ]
+    wanted = {i["path"]: int(i.get("version") or 0) for i in items}
+    stale = [p for p, v in wanted.items() if _versions.get(p) != v or p not in _index]
+    fresh = note_store.batch_get_text(stale) if stale else {}
+    by_path = {i["path"]: i for i in items}
+    for rel in list(_index):
+        if rel not in wanted:
+            _index.pop(rel, None)
+            _texts.pop(rel, None)
+            _versions.pop(rel, None)
+    for rel in stale:
+        text = fresh.get(rel)
+        if text is None:  # body only lives in S3 (very large note)
+            text = note_store.read_text(rel) or ""
+        try:
+            _index[rel] = _parse_text(rel, text, _iso_to_ts(by_path[rel].get("updated_at")))
+            _texts[rel] = text
+            _versions[rel] = wanted[rel]
+        except Exception:
+            logger.exception("Failed to index %s", rel)
+    _name_map.clear()
+    for meta in _index.values():
+        _register_names(meta)
+
+
 def rebuild_index() -> dict[str, Any]:
     global _built
     root = vault_backend.vault_root()
     with _lock:
-        _index.clear()
-        _name_map.clear()
-        for path in root.rglob("*.md"):
-            if ".vault" in path.parts:
-                continue
-            rel = path.relative_to(root).as_posix()
-            try:
-                meta = _parse_note(rel, path)
-                _index[rel] = meta
-                _register_names(meta)
-            except Exception:
-                logger.exception("Failed to index %s", rel)
+        if note_store.enabled():
+            _rebuild_from_dynamodb()
+        else:
+            _index.clear()
+            _name_map.clear()
+            for path in root.rglob("*.md"):
+                if ".vault" in path.parts:
+                    continue
+                rel = path.relative_to(root).as_posix()
+                try:
+                    meta = _parse_note(rel, path)
+                    _index[rel] = meta
+                    _register_names(meta)
+                except Exception:
+                    logger.exception("Failed to index %s", rel)
         _built = True
         graph = build_graph_payload()
         cache = vault_backend.cache_dir()
@@ -307,6 +356,25 @@ def ensure_index() -> None:
 
 
 def update_note(rel: str) -> None:
+    global _built
+    if note_store.enabled():
+        text = note_store.read_text(rel) if rel.lower().endswith((".md", ".markdown")) else None
+        item = note_store.get(rel) if text is not None else None
+        with _lock:
+            for k in [k for k, v in _name_map.items() if v == rel]:
+                del _name_map[k]
+            if text is not None and item is not None:
+                meta = _parse_text(rel, text, _iso_to_ts(item.get("updated_at")))
+                _index[rel] = meta
+                _texts[rel] = text
+                _versions[rel] = int(item.get("version") or 0)
+                _register_names(meta)
+            else:
+                _index.pop(rel, None)
+                _texts.pop(rel, None)
+                _versions.pop(rel, None)
+            _built = True
+        return
     root = vault_backend.vault_root()
     path = root / rel
     with _lock:
@@ -335,6 +403,8 @@ def remove_note(rel: str) -> None:
     """Drop in-memory index entries only. Call notes_db.on_note_deleted for file deletes."""
     with _lock:
         _index.pop(rel, None)
+        _texts.pop(rel, None)
+        _versions.pop(rel, None)
         to_del = [k for k, v in _name_map.items() if v == rel]
         for k in to_del:
             del _name_map[k]
@@ -482,7 +552,10 @@ def search(query: str, *, limit: int = 50) -> list[dict[str, Any]]:
             score += 3
         # full text scan for stronger match
         try:
-            text = (root / meta.path).read_text(encoding="utf-8", errors="replace").lower()
+            if note_store.enabled():
+                text = (_texts.get(meta.path) or "").lower()
+            else:
+                text = (root / meta.path).read_text(encoding="utf-8", errors="replace").lower()
             if q in text:
                 score += 5
                 idx = text.find(q)

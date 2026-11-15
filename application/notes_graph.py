@@ -167,6 +167,18 @@ def get_pattern() -> str:
 
 def list_vault_folders() -> list[dict[str, str]]:
     """Top-level vault folders for Notes Configure."""
+    from application import note_store
+
+    if note_store.enabled():
+        names = sorted(
+            {
+                i["path"].split("/", 1)[0]
+                for i in note_store.list_items()
+                if "/" in i["path"] or i.get("kind") == note_store.KIND_FOLDER
+            },
+            key=str.lower,
+        )
+        return [{"name": n, "path": n} for n in names if not n.startswith(".")]
     root = vault_backend.vault_root()
     folders: list[dict[str, str]] = []
     try:
@@ -662,6 +674,10 @@ def query_notes_graph(
     graph_json = _graph_json_path()
     if not graph_json.is_file():
         raise FileNotFoundError("Notes 그래프가 아직 없습니다.")
+    from application import note_store
+
+    if note_store.enabled():
+        note_store.ensure_cache_fresh()  # the query reads note files from disk
     root = vault_backend.vault_root()
     return query_user_graph(
         graph_json,

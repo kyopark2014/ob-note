@@ -110,6 +110,13 @@ import {
   setAgentWidth as persistAgentWidth,
 } from "./agentPanelSettings";
 import { resolveWikiTarget, wikiLinkMarkdown } from "./wikiLink";
+import {
+  getCachedNote,
+  invalidateCachedNote,
+  patchCachedNote,
+  rewriteCachedNotePath,
+  setCachedNote,
+} from "./noteCache";
 import type {
   FilePayload,
   OpenTab,
@@ -815,6 +822,8 @@ export default function App() {
   const renamedFromRef = useRef(new Map<string, string>());
   const draftRef = useRef(draft);
   const activePathRef = useRef(activePath);
+  const fileRef = useRef(file);
+  const dirtyRef = useRef(dirty);
   const tabsRef = useRef(tabs);
   /** Bumps on each open so a slower read cannot overwrite a newer tab switch. */
   const openSeqRef = useRef(0);
@@ -822,7 +831,6 @@ export default function App() {
   const tabNavTargetRef = useRef<string | null>(null);
   const treeRef = useRef(tree);
   const didRestoreNote = useRef(false);
-  const loginSyncUserRef = useRef<string | null>(null);
   const compressFinishRef = useRef<string | null>(null);
   const compressSawActiveRef = useRef(false);
   const compressBusyRef = useRef(false);
@@ -830,6 +838,8 @@ export default function App() {
   const clearingOpenedRef = useRef<string | null>(null);
   draftRef.current = draft;
   activePathRef.current = activePath;
+  fileRef.current = file;
+  dirtyRef.current = dirty;
   tabsRef.current = tabs;
   treeRef.current = tree;
 
@@ -1039,7 +1049,6 @@ export default function App() {
     } catch {
       /* GSI may not be loaded */
     }
-    loginSyncUserRef.current = null;
     setUserId(null);
     setTree([]);
     setTabs([]);
@@ -1175,17 +1184,9 @@ export default function App() {
     }
   }, [refreshSyncStatus, syncing]);
 
-  // Settings → Sync, once per signed-in user (fresh login and existing session).
-  useEffect(() => {
-    if (!userId) {
-      loginSyncUserRef.current = null;
-      return;
-    }
-    if (!ready || authError) return;
-    if (loginSyncUserRef.current === userId) return;
-    loginSyncUserRef.current = userId;
-    void runVaultSync();
-  }, [ready, userId, authError, runVaultSync]);
+  // No automatic Sync on login: the file tree is read straight from DynamoDB, so every
+  // device already sees the same list. Sync stays a manual action (Settings → Sync) for
+  // picking up edits made directly in S3 (console / CLI).
 
   useEffect(() => {
     if (!syncing && !syncPopupOpen) return;
@@ -1340,6 +1341,10 @@ export default function App() {
             : t,
         ),
       );
+      if (finalPath !== startPath) {
+        rewriteCachedNotePath(startPath, finalPath);
+      }
+      patchCachedNote(finalPath, body, { title: safe });
       await refreshTree();
       return { finalPath, content: body };
     },
@@ -1360,27 +1365,30 @@ export default function App() {
       }
       // Notes, images, and videos open in the main pane; other binaries stay drag/move-only.
       if (!isMd && !isImage && !isVideo) return false;
-      const currentPath = activePathRef.current;
-      if (
-        currentPath &&
-        path !== currentPath &&
-        /\.md$/i.test(currentPath) &&
-        dirty &&
-        draftRef.current !== file?.content
-      ) {
-        try {
-          const { finalPath } = await persistNote(currentPath, draftRef.current);
-          if (stale()) return false;
-          if (finalPath !== currentPath) {
-            setActivePath(finalPath);
-            writeLastNotePath(finalPath);
-            syncDeepLinkNotePath(finalPath);
-          }
-        } catch (err) {
-          if (tabNavTargetRef.current === path) tabNavTargetRef.current = null;
-          void showAlert(err instanceof Error ? err.message : String(err), "Save failed");
-          return false;
-        }
+
+      // Snapshot previous note; save in background so the click feels instant.
+      const prevPath = activePathRef.current;
+      const prevDraft = draftRef.current;
+      const prevFileContent = fileRef.current?.content;
+      const prevDirty =
+        Boolean(prevPath) &&
+        prevPath !== path &&
+        /\.md$/i.test(prevPath || "") &&
+        dirtyRef.current &&
+        prevDraft !== prevFileContent;
+      if (prevDirty && prevPath) {
+        void persistNote(prevPath, prevDraft)
+          .then(({ finalPath }) => {
+            if (finalPath !== prevPath && activePathRef.current === prevPath) {
+              // Unlikely: user navigated back to the old path mid-rename.
+              setActivePath(finalPath);
+              writeLastNotePath(finalPath);
+              syncDeepLinkNotePath(finalPath);
+            }
+          })
+          .catch((err) => {
+            void showAlert(err instanceof Error ? err.message : String(err), "Save failed");
+          });
       }
 
       if (isImage || isVideo) {
@@ -1390,6 +1398,7 @@ export default function App() {
         setDraft("");
         setDirty(false);
         setActivePath(path);
+        activePathRef.current = path;
         setTreeFocus("file");
         setTabs((prev) => {
           if (prev.some((t) => t.path === path)) return prev;
@@ -1410,7 +1419,35 @@ export default function App() {
         return true;
       }
 
-      let payload;
+      // Optimistic selection + cached body (if any) before the network round-trip.
+      const cached = getCachedNote(path);
+      const tabTitle =
+        cached?.title || path.split("/").pop()?.replace(/\.md$/i, "") || path;
+      setActivePath(path);
+      activePathRef.current = path;
+      setTreeFocus("file");
+      writeLastNotePath(path);
+      syncDeepLinkNotePath(path);
+      setTabs((prev) => {
+        if (prev.some((t) => t.path === path)) return prev;
+        return [...prev, { path, title: tabTitle }];
+      });
+      if (isNarrow) {
+        setPanel("hidden");
+      } else {
+        setPanel("files");
+      }
+      setViewMode("preview");
+      if (cached) {
+        setFile(cached);
+        setDraft(cached.content);
+        setDirty(false);
+      } else {
+        // Leave prior file mounted so file.path !== activePath → loading pane.
+        setDirty(false);
+      }
+
+      let payload: FilePayload;
       try {
         payload = await api.readFile(path);
         if (stale()) return false;
@@ -1435,6 +1472,7 @@ export default function App() {
           // transient S3 download miss while the object still exists remotely).
           if (purged) {
             clearLastNotePath(path);
+            invalidateCachedNote(path);
             setTabs((prev) => prev.filter((t) => t.path !== path));
             updatePinnedPaths(removePinnedPaths(pinnedPaths, path));
             if (activePathRef.current === path) {
@@ -1460,9 +1498,27 @@ export default function App() {
       if (tabNavTargetRef.current === path || tabNavTargetRef.current === resolvedPath) {
         tabNavTargetRef.current = null;
       }
-      setFile(payload);
-      setDraft(payload.content);
-      setDirty(false);
+      setCachedNote(payload);
+      if (resolvedPath !== path) {
+        rewriteCachedNotePath(path, resolvedPath);
+        setCachedNote({ ...payload, path: resolvedPath });
+      }
+      // Don't clobber keystrokes typed while the read was in flight.
+      const typedWhileLoading =
+        dirtyRef.current &&
+        activePathRef.current === resolvedPath &&
+        draftRef.current !== (fileRef.current?.content ?? "");
+      if (typedWhileLoading) {
+        setFile((prev) =>
+          prev && prev.path === resolvedPath
+            ? { ...payload, content: prev.content }
+            : payload,
+        );
+      } else {
+        setFile(payload);
+        setDraft(payload.content);
+        setDirty(false);
+      }
       setActivePath(resolvedPath);
       activePathRef.current = resolvedPath;
       setTreeFocus("file");
@@ -1471,7 +1527,13 @@ export default function App() {
       setTabs((prev) => {
         const withoutStale =
           resolvedPath === path ? prev : prev.filter((t) => t.path !== path);
-        if (withoutStale.some((t) => t.path === resolvedPath)) return withoutStale;
+        if (withoutStale.some((t) => t.path === resolvedPath)) {
+          return withoutStale.map((t) =>
+            t.path === resolvedPath
+              ? { ...t, title: payload.title || t.title }
+              : t,
+          );
+        }
         return [
           ...withoutStale,
           {
@@ -1480,16 +1542,9 @@ export default function App() {
           },
         ];
       });
-      // Narrow / mobile: dismiss overlay panel so the note view fills the screen.
-      if (isNarrow) {
-        setPanel("hidden");
-      } else {
-        setPanel("files");
-      }
-      setViewMode("preview");
       return true;
     },
-    [dirty, file?.content, isNarrow, persistNote, pinnedPaths, refreshTree, showAlert, updatePinnedPaths],
+    [isNarrow, persistNote, pinnedPaths, refreshTree, showAlert, updatePinnedPaths],
   );
 
   // Deep link (?note=…) → last note → first markdown. Login gate keeps ?note= until auth succeeds.
@@ -1600,15 +1655,16 @@ export default function App() {
     if (!path || !/\.md$/i.test(path)) return;
     setSaving(true);
     try {
-      const { finalPath } = await persistNote(path, draftRef.current);
+      const { finalPath, content: saved } = await persistNote(path, draftRef.current);
       activePathRef.current = finalPath;
       if (finalPath !== path) {
         setActivePath(finalPath);
         writeLastNotePath(finalPath);
       }
       const payload = await api.readFile(finalPath);
+      setCachedNote(payload);
       setFile(payload);
-      setDraft(payload.content);
+      setDraft(payload.content || saved);
       setDirty(false);
       setViewMode("preview");
     } catch (err) {
@@ -2192,6 +2248,7 @@ export default function App() {
         isMdFile && activePath === path ? draftRef.current : null;
       try {
         await api.rename(path, to);
+        rewriteCachedNotePath(path, to);
         renamedFromRef.current.set(path, to);
         if (activePathRef.current === path || activePathRef.current?.startsWith(path + "/")) {
           activePathRef.current = rewritePath(activePathRef.current!);
@@ -2295,6 +2352,7 @@ export default function App() {
         return;
       }
       try {
+        rewriteCachedNotePath(fromPath, to);
         renamedFromRef.current.set(fromPath, to);
         if (activePathRef.current === fromPath) activePathRef.current = to;
         else if (activePathRef.current?.startsWith(fromPath + "/")) {
@@ -2701,6 +2759,7 @@ export default function App() {
         if (!ok) return;
         try {
           await api.deletePath(path);
+          invalidateCachedNote(path);
           updatePinnedPaths(removePinnedPaths(pinnedPaths, path));
           setTabs((prev) => prev.filter((t) => t.path !== path));
           if (activePath === path) {
@@ -2904,6 +2963,7 @@ export default function App() {
       for (const path of paths) {
         pins = removePinnedPaths(pins, path);
         removeTreePath(path, false);
+        invalidateCachedNote(path);
       }
       updatePinnedPaths(pins);
       setTabs((prev) => prev.filter((tab) => !dropped.has(tab.path)));
@@ -2985,6 +3045,7 @@ export default function App() {
         if (!ok) return;
         try {
           await api.deletePath(path);
+          invalidateCachedNote(path);
           updatePinnedPaths(removePinnedPaths(pinnedPaths, path));
           removeOpenFolders(path);
           if (selectedFolder === path || selectedFolder?.startsWith(path + "/")) {
@@ -4036,6 +4097,29 @@ export default function App() {
                   <span>{activePath.split("/").pop()}</span>
                 </div>
               </>
+            ) : activePath &&
+              /\.md$/i.test(activePath) &&
+              (!file || file.path !== activePath) ? (
+              <>
+                <div className="toolbar">
+                  <div className="breadcrumb">
+                    {crumbs.map((c, i) => (
+                      <span key={`${c}-${i}`}>
+                        {i > 0 ? " / " : ""}
+                        {c.replace(/\.md$/i, "")}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="content">
+                  <div className="empty-state note-loading" aria-busy="true">
+                    불러오는 중…
+                  </div>
+                </div>
+                <div className="status-bar">
+                  <span>Loading</span>
+                </div>
+              </>
             ) : activePath && file ? (
               <>
                 <div className="toolbar">
@@ -4184,7 +4268,6 @@ export default function App() {
                     </div>
                   ) : (
                     <MarkdownEditor
-                      key={activePath}
                       handleRef={markdownEditorRef}
                       content={draft}
                       notePath={activePath}

@@ -9,7 +9,7 @@ Obsidian형 **Local-first Plain Text** vault 웹 앱입니다.
 |---|---|
 | 접속 경로 | `https://vault.my-agentic-ai.click` |
 | React 앱 | [`web/`](web/) (`base: /`) |
-| Vault (markdown) | S3 API `{userId}/vault/` ↔ working `data/{userId}/vault/` |
+| Vault (markdown) | **DynamoDB** `ob-note` (기준) → S3 `{userId}/vault/` (원본 미러) · 로컬 `data/{userId}/vault/` (캐시) |
 | App-data (DB) | S3 Files `/` → ECS `/mnt/app-data` |
 | 로컬 working copy | `data/{userId}/vault/` |
 | 설정 폴더 | `{user}/.vault/` (`.obsidian` 대체) |
@@ -17,27 +17,46 @@ Obsidian형 **Local-first Plain Text** vault 웹 앱입니다.
 
 ## 아키텍처
 
+노트는 **DynamoDB가 기준(source of truth)** 이고, S3는 그 원본 사본, 로컬 working copy는 읽기용 캐시입니다.
+자세한 설계는 [docs/DYNAMODB_NOTES.md](docs/DYNAMODB_NOTES.md).
+
 ```text
 CloudFront-for-ob-note
   └─ ALB (alb-for-ob-note)
        └─ /*       → ECS service-for-ob-note
-            ├─ working: /app/data/{userId}/vault/  ← S3 API sync {userId}/vault/
-            └─ /mnt/app-data/{userId}/notes.db     ← S3 Files bucket root (ECS only)
+            ├─ DynamoDB  ob-note      ← 모든 노트 read/write/list/rename/delete의 기준
+            │     └─(outbox)─► S3 {userId}/vault/  ← 항상 최신 원본 유지 (다운로드·압축·백업)
+            ├─ working: /app/data/{userId}/vault/  ← DynamoDB에서 파생된 캐시 (언제든 재생성)
+            └─ /mnt/app-data/{userId}/notes.db     ← agent 채팅 기록 (S3 Files, ECS only)
 ```
 
-- **계정 분리**: Google `userId`(email)를 path segment로 sanitize해 노트·설정·그래프·sync 큐를 계정별로 격리 (agentic-work와 동일 패턴)
-- **Vault s3 모드 (ECS 기본)**: `VAULT_S3_ENABLE=1` — 로컬 working ↔ `s3://{bucket}/{userId}/vault/` sync
-  - 저장/삭제 시 pending 큐(`{user}/.vault/pending_s3_ops.json`, S3에도 미러)에 쌓은 뒤 flush
-  - Settings **Sync**: pending 업로드를 먼저 끝낸 다음, 해당 계정 S3 prefix에서 **변경분만** 내려받음
-  - 부팅 시에는 전역 pull 없이, 로그인 후 계정별 sync
-- **App-data (ECS only)**: agentic-work와 같이 S3 Files를 `/mnt/app-data`에 마운트
-  - `notes.db`(노트 레지스트리 + agent chat)는 NFS 위에서 직접 열지 않고 **working → persist** 복사
-  - working: `data/{user}/vault/.vault/notes.db`
-  - durable: `/mnt/app-data/{user}/notes.db` → `s3://{bucket}/{user}/notes.db`
-  - 로그인 시 S3 Files에서 notes.db를 **강제 복원** (toons-viewer `load_user_db_from_s3_files`와 동일)
-  - durable 없으면 working을 mount에 즉시 seed
-  - 이후 API는 idempotent restore만 수행; 변경 후 20초 debounce persist, shutdown flush
-- **local 모드**: `data/{userId}/vault/`만 사용 (app-data mount 없음)
+- **한 방향 흐름**: `API → DynamoDB → (S3, 로컬 캐시)`. S3에서 로컬로 내려받아 병합하는 단계가 없어서,
+  읽는 도중 다른 작업이 파일을 덮어쓰거나 지우는 경로가 없습니다.
+- **S3 반영**: 쓰기는 DynamoDB 조건부 put 후 바로 응답하고, S3 업로드는 백그라운드에서 이어집니다.
+  DynamoDB 항목 자체가 durable outbox라서 ECS task가 교체돼도 다음 task가 이어서 반영합니다.
+  삭제·이름변경은 같은 트랜잭션에 S3 tombstone을 남겨 S3 원본도 반드시 지워집니다.
+- **큰 파일·이미지·영상**: DynamoDB 항목 한도(400KB) 때문에 본문은 S3에 두고 메타만 DynamoDB에 둡니다.
+- **계정 분리**: Google `userId`(email)를 sanitize해 파티션 키(`USER#{id}`)·S3 prefix·캐시 경로를 분리
+- **압축/다운로드**: 시작 전에 S3 반영을 끝내고 로컬 사본을 완성한 뒤 진행하므로 zip은 S3 원본과 같습니다.
+- **설정 파일** `.vault/*.json`(공유 목록, 폴더 정렬 등)은 노트가 아니라서 기존처럼 S3 객체로 두고,
+  새 task 시작 시 없는 것만 한 번 복원합니다.
+- **App-data (ECS only)**: `notes.db`는 이제 agent 채팅 기록만 담고, 노트 id는 DynamoDB의 `note_id`를 씁니다.
+  S3 Files를 `/mnt/app-data`에 마운트하는 방식(working → persist 복사)은 그대로입니다.
+- **레거시 모드**: `dynamodb_table`이 없거나 `NOTES_DDB_DISABLE=1`이면 기존 로컬+S3 큐 동작을 유지합니다.
+  로컬 개발(`run_local.sh`)은 `VAULT_S3_ENABLE`이 없으므로 DynamoDB 없이 동작합니다.
+
+### DynamoDB 마이그레이션 / 점검
+
+```bash
+.venv/bin/python migrate_notes_to_dynamodb.py --dry-run        # 계획만 출력 (아무것도 쓰지 않음)
+.venv/bin/python migrate_notes_to_dynamodb.py --create-table   # 테이블 생성 + S3 노트 복사 (S3는 읽기 전용)
+.venv/bin/python migrate_notes_to_dynamodb.py --verify         # DynamoDB ↔ S3 일치 여부만 점검
+```
+
+- 재실행해도 안전합니다. DynamoDB 쪽 내용이 S3와 다르면 덮어쓰지 않고 `conflicts`로 보고합니다(`--overwrite`로 강제).
+- 기존 `{user}/notes.db`의 `note_id`를 그대로 승계해 agent 채팅 기록이 유지됩니다.
+- 같은 노트가 NFC/NFD(한글 유니코드 표기)로 중복 저장된 경우 더 최신 쪽을 채택하고, 나머지는 S3에 그대로 둔 채 리포트합니다.
+- 테스트: `.venv/bin/python -m pytest tests` (moto로 DynamoDB/S3를 흉내 내므로 AWS 계정이 필요 없습니다).
 
 ## 빠른 시작 (로컬)
 
@@ -106,8 +125,8 @@ data/
 | GET | `/api/files/read?path=` | 노트 읽기 |
 | PUT | `/api/files/write` | 노트 저장(덮어쓰기) |
 | POST | `/api/files/append` | 노트 이어쓰기 |
-| POST | `/api/files/sync` | pending flush 후 S3→로컬 incremental pull |
-| GET | `/api/files/sync` | pending 큐 상태 |
+| POST | `/api/files/sync` | DynamoDB→S3 반영(outbox flush) 후 로컬 캐시 갱신 (S3→DynamoDB pull 없음) |
+| GET | `/api/files/sync` | S3 반영 대기(outbox) 상태 |
 | POST | `/api/files/share` | 노트·파일·폴더 public 공유 링크 생성/재사용 |
 | GET | `/api/files/shares` | 공유 목록 |
 | POST | `/api/files/share/delete` | 공유 토큰 삭제 |

@@ -644,6 +644,12 @@ def readable_vault_path(rel_path: str) -> Optional[str]:
     cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
     if not cleaned or ".." in cleaned.split("/"):
         return None
+    from application import note_store
+
+    if note_store.enabled():
+        # DynamoDB is authoritative: a stale local cache must not keep a deleted note "alive".
+        item = note_store.get(cleaned)
+        return item["path"] if item is not None and item.get("kind") != note_store.KIND_FOLDER else None
     located = vault_backend.locate_vault_file(cleaned)
     if located is not None and located.is_file():
         root = vault_backend.vault_root().resolve()
@@ -671,6 +677,10 @@ def vault_folder_exists(rel_path: str) -> bool:
     cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
     if not cleaned or ".." in cleaned.split("/"):
         return False
+    from application import note_store
+
+    if note_store.enabled():
+        return note_store.is_dir(cleaned)
     try:
         target = vault_backend.resolve_vault_path(cleaned)
         if target.is_dir():
@@ -859,6 +869,10 @@ def _read_s3_rel(rel_path: str) -> Optional[bytes]:
 def read_vault_text(rel_path: str) -> Optional[str]:
     """Read note text: local vault first, then S3 (mount lag / API-upload gap)."""
     cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    from application import note_store
+
+    if note_store.enabled():
+        return note_store.read_text(cleaned)
     located = vault_backend.locate_vault_file(cleaned)
     if located is not None and located.is_file():
         return located.read_text(encoding="utf-8", errors="replace")
@@ -871,6 +885,10 @@ def read_vault_text(rel_path: str) -> Optional[str]:
 def read_vault_bytes(rel_path: str) -> Optional[bytes]:
     """Read binary vault object: local first, then S3."""
     cleaned = (rel_path or "").replace("\\", "/").lstrip("/")
+    from application import note_store
+
+    if note_store.enabled():
+        return note_store.read_bytes(cleaned)
     located = vault_backend.locate_vault_file(cleaned)
     if located is not None and located.is_file():
         return located.read_bytes()
@@ -1137,6 +1155,16 @@ def list_folder_tree_notes(folder_path: str) -> set[str]:
     cleaned = (folder_path or "").replace("\\", "/").lstrip("/")
     if ".." in cleaned.split("/"):
         return set()
+    from application import note_store
+
+    if note_store.enabled():
+        return {
+            i["path"]
+            for i in note_store.list_items(cleaned)
+            if i.get("kind") != note_store.KIND_FOLDER
+            and i["path"].lower().endswith(".md")
+            and "/." not in f"/{i['path']}"
+        }
     found: set[str] = set()
     try:
         root = vault_backend.vault_root()

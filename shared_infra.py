@@ -252,6 +252,9 @@ def _put_role_policy(iam, role_name: str, policy_name: str, document: dict[str, 
     )
 
 
+NOTES_TABLE = PROJECT
+
+
 def ensure_ecs_roles(iam, account: str, region: str, bucket: str) -> dict[str, str]:
     """Create ECS task/execution roles (if missing)."""
     task_role = f"role-ecs-task-for-{PROJECT}-{region}"
@@ -318,6 +321,34 @@ def ensure_ecs_roles(iam, account: str, region: str, bucket: str) -> dict[str, s
                     "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
                     "Resource": [f"{bucket_arn}/*"],
                 },
+            ],
+        },
+    )
+
+    # Notes live in DynamoDB (source of truth); S3 is mirrored from it. TransactWriteItems
+    # has no IAM action of its own: it needs the per-item Put/Update/Delete permissions.
+    notes_table_arn = f"arn:aws:dynamodb:{region}:{account}:table/{NOTES_TABLE}"
+    _put_role_policy(
+        iam,
+        task_role,
+        f"ecs-task-dynamodb-notes-for-{PROJECT}",
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "NotesTableReadWrite",
+                    "Effect": "Allow",
+                    "Action": [
+                        "dynamodb:GetItem",
+                        "dynamodb:PutItem",
+                        "dynamodb:UpdateItem",
+                        "dynamodb:DeleteItem",
+                        "dynamodb:BatchGetItem",
+                        "dynamodb:Query",
+                        "dynamodb:DescribeTable",
+                    ],
+                    "Resource": [notes_table_arn, f"{notes_table_arn}/index/*"],
+                }
             ],
         },
     )

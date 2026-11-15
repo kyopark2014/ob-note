@@ -318,14 +318,18 @@ export function MarkdownEditor({
     };
   }, [editor]);
 
+  // Reuse the same TipTap instance across note switches (App no longer remounts via key).
+  const prevNotePathRef = useRef(notePath);
   useEffect(() => {
     if (!editor || !acceptExternalRef.current) return;
-    if (content === emittedRef.current) return;
+    const pathChanged = prevNotePathRef.current !== notePath;
+    prevNotePathRef.current = notePath;
+    if (!pathChanged && content === emittedRef.current) return;
     syncingRef.current = true;
     editor.commands.setContent(content, { contentType: "markdown", emitUpdate: false });
     emittedRef.current = content;
     syncingRef.current = false;
-  }, [content, editor]);
+  }, [content, editor, notePath]);
 
   const insertMarkdown = (markdown: string) => {
     const current = editorRef.current;

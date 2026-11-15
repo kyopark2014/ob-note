@@ -1387,6 +1387,20 @@ html[data-theme="light"] .tree-item.selected {
   padding: 32px;
 }
 
+.note-loading {
+  animation: note-loading-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes note-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 .login-gate {
   height: 100%;
   display: grid;
