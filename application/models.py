@@ -21,6 +21,8 @@ MODEL_NAMES: list[str] = [
     "Claude 4.5 Opus",
     "OpenAI GPT 5.4",
     "OpenAI GPT 5.5",
+    "OpenAI GPT 6.2 Astra",
+    "OpenAI GPT 6.2 Sol",
     "OpenAI GPT 6 Astra",
     "OpenAI GPT 6.1 Sol",
     "OpenAI GPT 6 Sol",
@@ -97,6 +99,14 @@ _MODEL_PROFILES: dict[str, dict[str, Any]] = {
         "model_type": "openai",
         "model_id": "openai.gpt-5.5",
         "mantle_api": "responses",
+    },
+    "OpenAI GPT 6.2 Astra": {
+        "model_type": "openai",
+        "model_id": "us.openai.gpt-6.2-astra",
+    },
+    "OpenAI GPT 6.2 Sol": {
+        "model_type": "openai",
+        "model_id": "us.openai.gpt-6.2-sol",
     },
     "OpenAI GPT 6 Astra": {
         "model_type": "openai",
