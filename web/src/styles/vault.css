@@ -445,7 +445,8 @@ html[data-theme="light"] .rail-btn[data-tooltip]::before {
   overflow: hidden;
 }
 
-.config-popover-end {
+.config-popover-end,
+.config-popover-below {
   transform: none;
 }
 
@@ -691,6 +692,23 @@ body.is-resizing-sidebar iframe {
   text-transform: uppercase;
   color: var(--text-muted);
   user-select: none;
+}
+
+button.section-label-toggle {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: inherit;
+  /* keep .section-label font-size / weight / color */
+}
+
+button.section-label-toggle:hover {
+  color: var(--text);
 }
 
 .tree-pin-icon {

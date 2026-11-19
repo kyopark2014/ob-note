@@ -35,6 +35,18 @@ export function RefreshIcon() {
   );
 }
 
+export function SortIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h12" />
+      <path d="M3 12h8" />
+      <path d="M3 18h5" />
+      <path d="M19 4v16" />
+      <path d="M15 8l4-4 4 4" />
+    </svg>
+  );
+}
+
 export function PlusFileIcon() {
   /* Obsidian-style: new note (file + pen) */
   return (

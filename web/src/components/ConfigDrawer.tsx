@@ -7,8 +7,8 @@ interface Props {
   selected: string[];
   anchorEl: HTMLElement | null;
   mode?: "multi" | "single";
-  /** above = open upward (default); end = open to the right of the anchor */
-  placement?: "above" | "end";
+  /** above = open upward (default); below = open under the anchor; end = open to the right */
+  placement?: "above" | "below" | "end";
   onChange: (next: string[]) => void;
   onClose: () => void;
 }
@@ -77,6 +77,15 @@ export function ConfigDrawer({
       return;
     }
     const left = Math.min(Math.max(8, rect.left), window.innerWidth - width - 8);
+    if (placement === "below") {
+      const top = rect.bottom + MENU_GAP;
+      const maxHeight = Math.min(
+        MENU_MAX_HEIGHT,
+        Math.max(120, window.innerHeight - top - 8),
+      );
+      setPosition({ left, top, width, maxHeight });
+      return;
+    }
     const top = rect.top - MENU_GAP;
     const maxHeight = Math.min(MENU_MAX_HEIGHT, Math.max(120, top - 8));
     setPosition({ left, top, width, maxHeight });
@@ -119,7 +128,13 @@ export function ConfigDrawer({
   return createPortal(
     <div
       ref={menuRef}
-      className={`config-popover${placement === "end" ? " config-popover-end" : ""}`}
+      className={`config-popover${
+        placement === "end"
+          ? " config-popover-end"
+          : placement === "below"
+            ? " config-popover-below"
+            : ""
+      }`}
       role="dialog"
       aria-label={title}
       style={{

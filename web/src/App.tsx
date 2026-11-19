@@ -49,6 +49,7 @@ import {
   SearchIcon,
   SettingsIcon,
   ShareListIcon,
+  SortIcon,
   SyncIcon,
   ViewIcon,
 } from "./components/Icons";
@@ -90,6 +91,14 @@ import {
   setFolderOpen,
 } from "./treeSettings";
 import {
+  TREE_SORT_OPTIONS,
+  getTreeSortMode,
+  labelToTreeSortMode,
+  setTreeSortMode as persistTreeSortMode,
+  treeSortModeToLabel,
+  type TreeSortMode,
+} from "./treeSortSettings";
+import {
   getShowImages,
   isCompanionMediaFileName,
   isDocumentFileName,
@@ -100,7 +109,11 @@ import {
 import {
   SIDEBAR_W_DEFAULT,
   clampSidebarWidth,
+  getPinnedListOpen,
+  getRecentListOpen,
   getSidebarWidth,
+  setPinnedListOpen as persistPinnedListOpen,
+  setRecentListOpen as persistRecentListOpen,
   setSidebarWidth as persistSidebarWidth,
 } from "./sidebarSettings";
 import {
@@ -187,6 +200,32 @@ function filterTreeForView(nodes: TreeNode[], showImages: boolean): TreeNode[] {
       if (showImages) return true;
       return !isCompanionMediaFileName(n.name);
     });
+}
+
+function parseTreeTimestamp(value?: string | null): number {
+  if (!value) return 0;
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Client-side folder sort. Name keeps server/custom order; dates are newest-first. */
+function sortTreeNodes(nodes: TreeNode[], mode: TreeSortMode): TreeNode[] {
+  if (mode === "name") return nodes;
+  const dateKey = mode === "created" ? "created_at" : "updated_at";
+  const sorted = [...nodes].sort((a, b) => {
+    if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+    if (a.type === "folder") {
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    }
+    const diff = parseTreeTimestamp(b[dateKey]) - parseTreeTimestamp(a[dateKey]);
+    if (diff !== 0) return diff;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
+  return sorted.map((n) =>
+    n.type === "folder" && n.children
+      ? { ...n, children: sortTreeNodes(n.children, mode) }
+      : n,
+  );
 }
 
 const SKIP_CONFIRM_PREFIX = "ob-note:skip-confirm:";
@@ -405,6 +444,21 @@ function flattenAllPaths(nodes: TreeNode[]): string[] {
     if (n.children?.length) out.push(...flattenAllPaths(n.children));
   }
   return out;
+}
+
+const RECENT_LIST_LIMIT = 10;
+
+function flattenMarkdownFileNodes(nodes: TreeNode[]): TreeNode[] {
+  const out: TreeNode[] = [];
+  for (const n of nodes) {
+    if (n.type === "file" && /\.md$/i.test(n.name)) out.push(n);
+    if (n.children?.length) out.push(...flattenMarkdownFileNodes(n.children));
+  }
+  return out;
+}
+
+function noteRecencyTimestamp(node: TreeNode): number {
+  return parseTreeTimestamp(node.updated_at) || parseTreeTimestamp(node.created_at);
 }
 
 function findTreeNode(nodes: TreeNode[], path: string): TreeNode | null {
@@ -760,7 +814,11 @@ export default function App() {
   const [syncProgress, setSyncProgress] = useState<SyncProgressInfo | null>(null);
   const [pendingSync, setPendingSync] = useState(0);
   const [showImages, setShowImages] = useState(() => getShowImages());
+  const [treeSortMode, setTreeSortMode] = useState<TreeSortMode>(() => getTreeSortMode());
+  const [sortOpen, setSortOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => getSidebarWidth());
+  const [recentListOpen, setRecentListOpen] = useState(() => getRecentListOpen());
+  const [pinnedListOpen, setPinnedListOpen] = useState(() => getPinnedListOpen());
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const sidebarWidthRef = useRef(sidebarWidth);
   sidebarWidthRef.current = sidebarWidth;
@@ -799,6 +857,7 @@ export default function App() {
   const sharePermissionBtnRef = useRef<HTMLButtonElement>(null);
   const viewBtnRef = useRef<HTMLButtonElement>(null);
   const layoutBtnRef = useRef<HTMLButtonElement>(null);
+  const sortBtnRef = useRef<HTMLButtonElement>(null);
   const graphBtnRef = useRef<HTMLButtonElement>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const documentsBtnRef = useRef<HTMLButtonElement>(null);
@@ -1745,6 +1804,54 @@ export default function App() {
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activePath, noteFullscreen]);
 
+  // Deep link / open-file / rename: expand ancestors then scroll the sidebar to the note.
+  useEffect(() => {
+    const path = renamingPath || activePath;
+    if (!path || noteFullscreen || panel === "hidden" || panel === "search" || panel === "meeting") {
+      return;
+    }
+    ensureAncestorsOpen(path);
+
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    const tryScroll = () => {
+      if (cancelled) return;
+      const sidebar = sidebarBodyRef.current;
+      if (!sidebar) return;
+      // Prefer the main vault tree (direct child), not Recent/Pinned.
+      const renameInput = renamingPath
+        ? (sidebar.querySelector(
+            `:scope > .file-tree .tree-draft-input`,
+          ) as HTMLElement | null)
+        : null;
+      if (renameInput) {
+        renameInput.scrollIntoView({ block: "center", inline: "nearest" });
+        renameInput.focus();
+        if (renameInput instanceof HTMLInputElement) renameInput.select();
+        return;
+      }
+      const selector = `.tree-item[data-path="${CSS.escape(path)}"]`;
+      const el =
+        (sidebar.querySelector(`:scope > .file-tree ${selector}`) as HTMLElement | null) ||
+        (sidebar.querySelector(selector) as HTMLElement | null);
+      if (el) {
+        el.scrollIntoView({ block: "center", inline: "nearest" });
+        return;
+      }
+      // Ancestors may still be expanding — retry after paint.
+      if (attempts++ < maxAttempts) {
+        requestAnimationFrame(tryScroll);
+      }
+    };
+
+    requestAnimationFrame(tryScroll);
+    return () => {
+      cancelled = true;
+    };
+  }, [activePath, renamingPath, noteFullscreen, panel, tree]);
+
   useEffect(() => {
     function keepHorizontalCaret(target: EventTarget | null): boolean {
       if (!(target instanceof HTMLElement)) return false;
@@ -2431,6 +2538,11 @@ export default function App() {
 
   const reorderInFolder = useCallback(
     async (folderPath: string, names: string[]) => {
+      // Manual drag order only applies in Name mode — switch so the new order sticks.
+      if (treeSortMode !== "name") {
+        persistTreeSortMode("name");
+        setTreeSortMode("name");
+      }
       // Optimistic local reorder so the tree updates immediately.
       const applyLocal = (nodes: TreeNode[]): TreeNode[] => {
         const rewrite = (list: TreeNode[], parent: string): TreeNode[] => {
@@ -2469,7 +2581,7 @@ export default function App() {
         await refreshTree();
       }
     },
-    [refreshTree, showAlert],
+    [refreshTree, showAlert, treeSortMode],
   );
 
   const uploadFilesToFolder = useCallback(
@@ -3252,8 +3364,8 @@ export default function App() {
   }, [activePath, draft]);
 
   const visibleTree = useMemo(
-    () => filterTreeForView(tree, showImages),
-    [tree, showImages],
+    () => sortTreeNodes(filterTreeForView(tree, showImages), treeSortMode),
+    [tree, showImages, treeSortMode],
   );
 
   const pinnedPathSet = useMemo(() => new Set(pinnedPaths), [pinnedPaths]);
@@ -3274,6 +3386,13 @@ export default function App() {
     }
     return nodes;
   }, [pinnedPaths, showImages, tree]);
+
+  const recentNodes = useMemo(() => {
+    return flattenMarkdownFileNodes(tree)
+      .filter((n) => noteRecencyTimestamp(n) > 0)
+      .sort((a, b) => noteRecencyTimestamp(b) - noteRecencyTimestamp(a))
+      .slice(0, RECENT_LIST_LIMIT);
+  }, [tree]);
 
   // Drop stale pins when files disappear from the vault
   useEffect(() => {
@@ -3844,6 +3963,24 @@ export default function App() {
           onClose={() => setViewOpen(false)}
         />
       )}
+      {sortOpen && (
+        <ConfigDrawer
+          title="Sort by"
+          options={[...TREE_SORT_OPTIONS]}
+          selected={[treeSortModeToLabel(treeSortMode)]}
+          mode="single"
+          placement="below"
+          anchorEl={sortBtnRef.current}
+          onChange={(next) => {
+            const label = next[0];
+            if (!label) return;
+            const mode = labelToTreeSortMode(label);
+            persistTreeSortMode(mode);
+            setTreeSortMode(mode);
+          }}
+          onClose={() => setSortOpen(false)}
+        />
+      )}
 
       <aside className={`sidebar${panel === "hidden" ? " collapsed" : ""}`}>
         {panel === "files" && (
@@ -3878,6 +4015,18 @@ export default function App() {
                 >
                   <PlusFolderIcon />
                 </button>
+                <button
+                  ref={sortBtnRef}
+                  type="button"
+                  className={`icon-btn${sortOpen ? " active" : ""}`}
+                  data-tooltip="Sort"
+                  aria-label={`Sort by ${treeSortModeToLabel(treeSortMode)}`}
+                  aria-expanded={sortOpen}
+                  aria-haspopup="dialog"
+                  onClick={() => setSortOpen((v) => !v)}
+                >
+                  <SortIcon />
+                </button>
               </div>
             </div>
             <div
@@ -3910,39 +4059,92 @@ export default function App() {
                 );
               }}
             >
-              {pinnedNodes.length > 0 && (
+              {recentNodes.length > 0 && (
                 <div className="tree-section">
-                  <div className="section-label">Pinned</div>
-                  <FileTree
-                    nodes={pinnedNodes}
-                    activePath={activePath}
-                    selectedFolder={selectedFolder}
-                    treeFocus={treeFocus}
-                    pinnedPaths={pinnedPathSet}
-                    hidePinBadge
-                    onOpen={(p) => void openFile(p)}
-                    onSelectFolder={selectTreeFolder}
-                    onMove={(from, toParent) => void movePath(from, toParent)}
-                    onReorder={(folder, names) => void reorderInFolder(folder, names)}
-                    onUploadFiles={(parent, files) => void uploadFilesToFolder(parent, files)}
-                    onFolderContextMenu={(path, x, y) =>
-                      setCtxMenu({ kind: "folder", path, x, y })
-                    }
-                    onFileContextMenu={(path, x, y) => {
-                      setTreeFocus("file");
-                      setCtxMenu({ kind: "file", path, x, y });
+                  <button
+                    type="button"
+                    className="section-label section-label-toggle"
+                    aria-expanded={recentListOpen}
+                    onClick={() => {
+                      setRecentListOpen((open) => {
+                        const next = !open;
+                        persistRecentListOpen(next);
+                        return next;
+                      });
                     }}
-                    onPanelContextMenu={openPanelContextMenu}
-                    draftFolder={draftFolder}
-                    onDraftConfirm={(name) => void confirmCreateFolder(name)}
-                    onDraftCancel={cancelCreateFolder}
-                    renamingPath={renamingPath}
-                    onRenameConfirm={(path, name) => void confirmRename(path, name)}
-                    onRenameCancel={() => setRenamingPath(null)}
-                  />
+                  >
+                    Recent
+                  </button>
+                  {recentListOpen && (
+                    <FileTree
+                      nodes={recentNodes}
+                      activePath={activePath}
+                      selectedFolder={selectedFolder}
+                      treeFocus={treeFocus}
+                      pinnedPaths={pinnedPathSet}
+                      onOpen={(p) => void openFile(p)}
+                      onSelectFolder={selectTreeFolder}
+                      onMove={(from, toParent) => void movePath(from, toParent)}
+                      onUploadFiles={(parent, files) => void uploadFilesToFolder(parent, files)}
+                      onFolderContextMenu={(path, x, y) =>
+                        setCtxMenu({ kind: "folder", path, x, y })
+                      }
+                      onFileContextMenu={(path, x, y) => {
+                        setTreeFocus("file");
+                        setCtxMenu({ kind: "file", path, x, y });
+                      }}
+                      onPanelContextMenu={openPanelContextMenu}
+                    />
+                  )}
                 </div>
               )}
-              {pinnedNodes.length > 0 && <div className="section-label">Vaults</div>}
+              {pinnedNodes.length > 0 && (
+                <div className="tree-section">
+                  <button
+                    type="button"
+                    className="section-label section-label-toggle"
+                    aria-expanded={pinnedListOpen}
+                    onClick={() => {
+                      setPinnedListOpen((open) => {
+                        const next = !open;
+                        persistPinnedListOpen(next);
+                        return next;
+                      });
+                    }}
+                  >
+                    Pinned
+                  </button>
+                  {pinnedListOpen && (
+                    <FileTree
+                      nodes={pinnedNodes}
+                      activePath={activePath}
+                      selectedFolder={selectedFolder}
+                      treeFocus={treeFocus}
+                      pinnedPaths={pinnedPathSet}
+                      hidePinBadge
+                      onOpen={(p) => void openFile(p)}
+                      onSelectFolder={selectTreeFolder}
+                      onMove={(from, toParent) => void movePath(from, toParent)}
+                      onReorder={(folder, names) => void reorderInFolder(folder, names)}
+                      onUploadFiles={(parent, files) => void uploadFilesToFolder(parent, files)}
+                      onFolderContextMenu={(path, x, y) =>
+                        setCtxMenu({ kind: "folder", path, x, y })
+                      }
+                      onFileContextMenu={(path, x, y) => {
+                        setTreeFocus("file");
+                        setCtxMenu({ kind: "file", path, x, y });
+                      }}
+                      onPanelContextMenu={openPanelContextMenu}
+                      draftFolder={draftFolder}
+                      onDraftConfirm={(name) => void confirmCreateFolder(name)}
+                      onDraftCancel={cancelCreateFolder}
+                    />
+                  )}
+                </div>
+              )}
+              {(recentNodes.length > 0 || pinnedNodes.length > 0) && (
+                <div className="section-label">Vaults</div>
+              )}
               <FileTree
                 nodes={visibleTree}
                 activePath={activePath}

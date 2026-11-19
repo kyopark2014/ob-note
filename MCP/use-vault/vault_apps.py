@@ -45,20 +45,34 @@ def _load_html() -> str:
 
 def note_url(path: str) -> str:
     """Login-gated deep link to a note in ob-note (same shape the skills return)."""
-    return f"{vault.vault_base_url().rstrip('/')}/?note={quote_plus(path)}"
+    cleaned = (path or "").replace("\\", "/").lstrip("/").strip()
+    return f"{vault.vault_base_url().rstrip('/')}/?note={quote_plus(cleaned)}"
 
 
 def with_urls(value: Any) -> Any:
-    """Add a deep-link ``url`` to every note-like dict (has a string ``path``, not a folder)."""
+    """Add deep-link ``url`` / ``from_url`` fields (same shape as my-vaults)."""
     if isinstance(value, list):
         return [with_urls(v) for v in value]
-    if isinstance(value, dict):
-        out = {k: with_urls(v) for k, v in value.items()}
-        path = out.get("path")
-        if isinstance(path, str) and path and out.get("type") != "folder" and "url" not in out:
-            out["url"] = note_url(path)
+    if not isinstance(value, dict):
+        return value
+
+    out = {k: with_urls(v) for k, v in value.items()}
+    if out.get("type") == "folder":
         return out
-    return value
+
+    path = out.get("path")
+    if isinstance(path, str) and path.strip() and "url" not in out:
+        out["url"] = note_url(path)
+
+    to_val = out.get("to") or out.get("to_path")
+    if isinstance(to_val, str) and to_val.strip():
+        out["url"] = note_url(to_val)
+
+    from_val = out.get("from") or out.get("from_path")
+    if isinstance(from_val, str) and from_val.strip() and "from_url" not in out:
+        out["from_url"] = note_url(from_val)
+
+    return out
 
 
 def _require_actor(actor_id: str) -> str:
@@ -70,9 +84,14 @@ def _require_actor(actor_id: str) -> str:
 
 def _result(kind: str, payload: Any, text: str | None = None) -> CallToolResult:
     body = with_urls(payload) if isinstance(payload, dict) else {"data": payload}
+    # Text + structuredContent both include deep-link ``url`` (my-vaults parity).
     return CallToolResult(
-        # Same text the tools returned before: the model's view of the result is unchanged.
-        content=[TextContent(type="text", text=text if text is not None else vault.to_json(payload))],
+        content=[
+            TextContent(
+                type="text",
+                text=text if text is not None else vault.to_json(body),
+            )
+        ],
         structured_content={"ok": True, "kind": kind, **body},
     )
 
@@ -91,7 +110,7 @@ def vault_tree(actor_id: str) -> CallToolResult:
     Return the full file tree for the caller's vault (GET /api/files/tree).
 
     actor_id: account login id / email from the system prompt.
-    return: JSON tree
+    return: JSON tree; each note includes deep-link url — summarize as a linked TOC
     """
     try:
         uid = _require_actor(actor_id)
@@ -109,7 +128,7 @@ def vault_list(actor_id: str, prefix: str = "", ext: str = "md") -> CallToolResu
     actor_id: account login id / email from the system prompt.
     prefix: folder prefix, e.g. Meeting or notes (empty = vault root).
     ext: extension filter — md | txt | * (default md).
-    return: JSON file list
+    return: JSON file list with deep-link url per note — reply with a linked TOC
     """
     try:
         uid = _require_actor(actor_id)
@@ -134,7 +153,7 @@ def vault_read(actor_id: str, path: str, raw: bool = False) -> CallToolResult:
     actor_id: account login id / email from the system prompt.
     path: vault-relative path, e.g. Meeting/Weekly-Sync.md
     raw: if true, return markdown body only; otherwise full JSON.
-    return: note JSON or markdown body
+    return: note JSON (includes deep-link url) or markdown body
     """
     try:
         uid = _require_actor(actor_id)
@@ -250,7 +269,7 @@ def vault_search(actor_id: str, query: str, limit: int = 50) -> CallToolResult:
     actor_id: account login id / email from the system prompt.
     query: search query text.
     limit: max results (1–200, default 50).
-    return: JSON {query, results}
+    return: JSON {query, results} with deep-link url per hit — reply as a linked TOC
     """
     try:
         uid = _require_actor(actor_id)

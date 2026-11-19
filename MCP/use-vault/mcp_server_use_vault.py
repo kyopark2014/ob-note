@@ -12,7 +12,7 @@ import sys
 
 import vault_client as vault
 from mcp.server.mcpserver import MCPServer
-from vault_apps import apps
+from vault_apps import apps, with_urls
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +34,21 @@ Critical rules:
    (Category/Note.md)
 4. Prefer vault_read / vault_search before writing; overwrite with vault_write
    only when the user asks to save or update a note
+5. Tool JSON includes deep-link ``url`` (login-gated ``{vault}/?note=...``).
+   Whenever you mention a note path to the user, ALWAYS include a clickable
+   markdown link: [Note Title](url). Never show a bare path or bare URL alone.
+6. For list/search/tree summaries, present notes as a markdown TOC/table with
+   linked titles, e.g.:
+   - [guardrail 활용 방법](https://vault.../?note=Guardrail%2F...)
+   Even when an interactive MCP App UI is shown, still include this linked TOC
+   in the chat reply so users can open notes from the message.
+7. After vault_write/vault_append/vault_rename success, confirm with path +
+   clickable ``url`` (and ok: true). Do not omit the link.
+8. Long notes: keep one markdown file when possible; put a ## 목차 under the
+   title. Same-note sections use [heading](#anchor); references to other vault
+   notes use [title](url) from tool results (not public /s/ shares).
+9. Note body language: formal Korean 합니다체 (not 한다체). No CloudFront
+   /artifacts URLs inside notes — use vault-relative image paths only.
 """
 
 try:
@@ -56,7 +71,8 @@ def _require_actor(actor_id: str) -> str:
 
 
 def _ok(payload) -> str:
-    return vault.to_json(payload)
+    # Same deep-link ``url`` fields as my-vaults / vault_apps read tools.
+    return vault.to_json(with_urls(payload))
 
 
 def _err(exc: Exception) -> str:
@@ -89,7 +105,8 @@ def vault_write(actor_id: str, path: str, content: str) -> str:
     path: vault-relative path under a topic folder, e.g. Meeting/Note.md
           (do not write to vault root).
     content: full markdown body. No YAML frontmatter; start with # Title.
-    return: JSON write result
+          For long notes include ## 목차 with markdown links.
+    return: JSON write result including path and deep-link url
     """
     try:
         uid = _require_actor(actor_id)
@@ -130,7 +147,7 @@ def vault_append(
     content: text to append.
     create: if true, create the file when missing (default true).
     separator: inserted when the file does not end with a newline (default \\n).
-    return: JSON append result
+    return: JSON append result including path and deep-link url
     """
     try:
         uid = _require_actor(actor_id)

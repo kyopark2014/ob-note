@@ -75,12 +75,22 @@ docker run --rm -p 8000:8000 \
 
 Cursor 등 MCP 클라이언트에서는 Streamable HTTP URL로 `http://localhost:8000/mcp`를 등록하면 됩니다.
 
-## AgentCore Runtime 배포
+## AgentCore Runtime 배포 / 삭제
 
-ob-note 루트에서:
+korea-weather MCP와 같은 형식으로 패키지 안에서 배포·삭제합니다.
 
 ```bash
-python create_mcp.py
+cd MCP/use-vault
+python installer.py      # IAM → Docker/ECR → AgentCore Runtime
+python uninstaller.py    # Runtime → ECR → IAM role (--yes 로 확인 생략)
+```
+
+ob-note 루트에서도 동일하게 호출할 수 있습니다.
+
+```bash
+python installer.py --use-vault-only
+python uninstaller.py --use-vault-only --yes
+# 또는 (호환) python create_mcp.py
 ```
 
 ECR + AgentCore Runtime(MCP, IAM SigV4)만 배포합니다 (Gateway 없음).  
@@ -93,7 +103,8 @@ ECR + AgentCore Runtime(MCP, IAM SigV4)만 배포합니다 (Gateway 없음).
 
 - 인라인: 검색/목록은 카드 캐러셀(최대 8개), 노트는 요약 카드. 전체 화면: 트리·본문·백링크·그래프.
 - 결과는 `CallToolResult`: `content`는 기존 JSON 텍스트 그대로(모델이 읽는 값), `structuredContent`에
-  `{ok, kind, ...}`와 노트마다 deep link `url`을 담습니다. 쓰기 도구는 UI와 무관하게 그대로입니다.
+  `{ok, kind, ...}`와 노트마다 deep link `url`을 담습니다. 쓰기 도구도 `path`/`url`을 반환합니다.
+  에이전트는 채팅 목차·목록에 `[제목](url)` 마크다운 링크를 포함해야 합니다 (MCP Apps UI와 병행).
 - 코드: `vault_apps.py`(도구·리소스), `ui/`(뷰어 소스, `python3 MCP/use-vault/ui/build.py`로 `ui/dist` 생성 후 **커밋**).
 - UI 변경 후에는 이 MCP 런타임을 다시 배포해야 합니다.
 

@@ -19,3 +19,5 @@ venv/
 !README.md
 .bedrock_agentcore.yaml
 .dockerignore
+installer.py
+uninstaller.py

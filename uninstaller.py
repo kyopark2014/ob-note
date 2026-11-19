@@ -16,6 +16,8 @@ Usage:
   python uninstaller.py
   python uninstaller.py --yes
   python uninstaller.py --yes --keep-s3   # keep bucket (empty vault/ only if --purge-vault-prefix)
+  python uninstaller.py --use-vault-only     # only MCP/use-vault AgentCore runtime
+  python uninstaller.py --search-note-only   # only MCP/search-note AgentCore runtime
 """
 
 from __future__ import annotations
@@ -578,6 +580,38 @@ def delete_stack(
         delete_notes_table(region, notes_table or PROJECT)
 
 
+def uninstall_use_vault_mcp(*, yes: bool = False) -> int:
+    """Remove use-vault MCP runtime/ECR/role via ``MCP/use-vault/uninstaller.py``."""
+    import subprocess
+
+    script = ROOT / "MCP" / "use-vault" / "uninstaller.py"
+    logger.info("[use-vault] Uninstall MCP/use-vault AgentCore Runtime (%s)", script)
+    if not script.is_file():
+        logger.error("Missing %s", script)
+        return 1
+    cmd = [sys.executable, str(script)]
+    if yes:
+        cmd.append("--yes")
+    result = subprocess.run(cmd, cwd=str(script.parent), check=False)
+    return int(result.returncode)
+
+
+def uninstall_search_note_mcp(*, yes: bool = False) -> int:
+    """Remove search-note MCP runtime/ECR/role via ``MCP/search-note/uninstaller.py``."""
+    import subprocess
+
+    script = ROOT / "MCP" / "search-note" / "uninstaller.py"
+    logger.info("[search-note] Uninstall MCP/search-note AgentCore Runtime (%s)", script)
+    if not script.is_file():
+        logger.error("Missing %s", script)
+        return 1
+    cmd = [sys.executable, str(script)]
+    if yes:
+        cmd.append("--yes")
+    result = subprocess.run(cmd, cwd=str(script.parent), check=False)
+    return int(result.returncode)
+
+
 def clean_local_config(cfg: dict[str, Any]) -> None:
     logger.info("[9/9] Cleaning deploy metadata in config.json")
     if not CONFIG_PATH.is_file():
@@ -599,6 +633,16 @@ def clean_local_config(cfg: dict[str, Any]) -> None:
         "s3_files_app_data_file_system_id",
         "s3_files_app_data_access_point_arn",
         "s3_files_app_data_mount_path",
+        "use_vault_mcp_runtime_arn",
+        "use_vault_mcp_url",
+        "use_vault_mcp_role",
+        "use_vault_mcp_ecr_repository",
+        "use_vault_mcp_image_tag",
+        "search_note_mcp_runtime_arn",
+        "search_note_mcp_url",
+        "search_note_mcp_role",
+        "search_note_mcp_ecr_repository",
+        "search_note_mcp_image_tag",
     }
     changed = False
     for k in drop:
@@ -633,7 +677,32 @@ def main() -> int:
         action="store_true",
         help="With --keep-s3, also delete vault/_public/ and {user}/vault/ objects",
     )
+    parser.add_argument(
+        "--use-vault-only",
+        action="store_true",
+        help="Delete only the use-vault MCP AgentCore runtime (MCP/use-vault/uninstaller.py).",
+    )
+    parser.add_argument(
+        "--search-note-only",
+        action="store_true",
+        help="Delete only the search-note MCP AgentCore runtime (MCP/search-note/uninstaller.py).",
+    )
+    parser.add_argument(
+        "--skip-use-vault",
+        action="store_true",
+        help="Skip use-vault MCP cleanup (ECS/app stack only).",
+    )
+    parser.add_argument(
+        "--skip-search-note",
+        action="store_true",
+        help="Skip search-note MCP cleanup.",
+    )
     args = parser.parse_args()
+
+    if args.search_note_only:
+        return uninstall_search_note_mcp(yes=args.yes)
+    if args.use_vault_only:
+        return uninstall_use_vault_mcp(yes=args.yes)
 
     cfg = load_cfg()
     region = str(cfg.get("region") or DEFAULT_REGION)
@@ -652,10 +721,16 @@ def main() -> int:
 
     if not args.yes:
         logger.info("")
+        mcp_bits = []
+        if not args.skip_use_vault:
+            mcp_bits.append("use-vault MCP")
+        if not args.skip_search_note:
+            mcp_bits.append("search-note MCP")
         logger.info(
             "Will delete: ECS, TG, /vault rules, ECR, logs, secrets, Cognito, "
-            "CloudFront, ALB/VPC/cluster/IAM%s",
+            "CloudFront, ALB/VPC/cluster/IAM%s%s",
             "" if args.keep_s3 else ", S3 bucket",
+            (", " + ", ".join(mcp_bits)) if mcp_bits else "",
         )
         if args.keep_s3 and args.purge_vault_prefix:
             logger.info("Also purge s3://%s/vault/ and s3://%s/{user}/vault/", bucket, bucket)
@@ -666,6 +741,21 @@ def main() -> int:
 
     start = time.time()
     try:
+        if not args.skip_use_vault:
+            rc = uninstall_use_vault_mcp(yes=True)
+            if rc != 0:
+                logger.warning(
+                    "use-vault MCP uninstall returned %s; continuing with app stack cleanup",
+                    rc,
+                )
+        if not args.skip_search_note:
+            rc = uninstall_search_note_mcp(yes=True)
+            if rc != 0:
+                logger.warning(
+                    "search-note MCP uninstall returned %s; continuing with app stack cleanup",
+                    rc,
+                )
+
         delete_ob_note_ecs_service(c["ecs"])
         deregister_task_definitions(c["ecs"])
         delete_vault_listener_rules(c["elbv2"])

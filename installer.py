@@ -1255,17 +1255,45 @@ def _uses_cloudfront(sharing_url: str, alb_dns: str) -> bool:
 
 
 def deploy_use_vault_mcp() -> int:
-    """Deploy / update the use-vault MCP AgentCore Runtime (same as ``python create_mcp.py``)."""
-    import create_mcp
+    """Deploy / update use-vault MCP via ``MCP/use-vault/installer.py``."""
+    installer = ROOT / "MCP" / "use-vault" / "installer.py"
+    logger.info("[use-vault] Deploy MCP/use-vault AgentCore Runtime (%s)", installer)
+    if not installer.is_file():
+        logger.error("Missing %s — falling back to create_mcp.py", installer)
+        import create_mcp
 
-    logger.info("[use-vault] Deploy MCP/use-vault AgentCore Runtime")
-    return create_mcp.main([])
+        return create_mcp.main([])
+    result = subprocess.run(
+        [sys.executable, str(installer)],
+        cwd=str(installer.parent),
+        check=False,
+    )
+    return int(result.returncode)
+
+
+def deploy_search_note_mcp() -> int:
+    """Deploy / update search-note MCP via ``MCP/search-note/installer.py``."""
+    installer = ROOT / "MCP" / "search-note" / "installer.py"
+    logger.info("[search-note] Deploy MCP/search-note AgentCore Runtime (%s)", installer)
+    if not installer.is_file():
+        logger.error("Missing %s — falling back to create_mcp.py", installer)
+        import create_mcp
+
+        return create_mcp.main(["--target", "search-note"])
+    result = subprocess.run(
+        [sys.executable, str(installer)],
+        cwd=str(installer.parent),
+        check=False,
+    )
+    return int(result.returncode)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Deploy ob-note (ECS) and the use-vault MCP runtime")
+    parser = argparse.ArgumentParser(
+        description="Deploy ob-note (ECS) and MCP AgentCore runtimes (use-vault / search-note)"
+    )
     parser.add_argument(
         "--skip-use-vault",
         action="store_true",
@@ -1274,9 +1302,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--use-vault-only",
         action="store_true",
-        help="Deploy only the use-vault MCP runtime (equivalent to python create_mcp.py).",
+        help="Deploy only the use-vault MCP runtime (MCP/use-vault/installer.py).",
+    )
+    parser.add_argument(
+        "--search-note-only",
+        action="store_true",
+        help="Deploy only the search-note MCP runtime (MCP/search-note/installer.py).",
     )
     args = parser.parse_args(argv)
+    if args.search_note_only:
+        return deploy_search_note_mcp()
     if args.use_vault_only:
         return deploy_use_vault_mcp()
 

@@ -514,22 +514,28 @@ function TreeRow({
         : undefined,
     suppressClick,
   );
-  const shouldForce =
+  // Draft / rename / forceOpen must stay visible; active note only auto-reveals
+  // (so the user can still collapse a folder that contains the open note).
+  const forceKeepOpen =
     forceOpenPaths?.has(node.path) ||
     draftFolder?.parentPath === node.path ||
     (draftFolder?.parentPath.startsWith(node.path + "/") ?? false) ||
-    (activePath?.startsWith(node.path + "/") ?? false) ||
     (renamingPath?.startsWith(node.path + "/") ?? false);
+  const containsActive = activePath?.startsWith(node.path + "/") ?? false;
 
   const [open, setOpen] = useState(
-    () => isFolderOpen(node.path) || !!shouldForce,
+    () => isFolderOpen(node.path) || !!forceKeepOpen || containsActive,
   );
+  const effectivelyOpen = open || !!forceKeepOpen;
 
+  // Expand when the active/rename/draft target appears under this folder.
+  // Depends on activePath (not just containsActive) so switching to another note
+  // in the same folder re-reveals after a manual collapse.
   useEffect(() => {
-    if (!shouldForce) return;
+    if (!forceKeepOpen && !containsActive) return;
     setOpen(true);
     setFolderOpen(node.path, true);
-  }, [shouldForce, node.path]);
+  }, [forceKeepOpen, containsActive, activePath, renamingPath, node.path]);
 
   const toggleOpen = useCallback(() => {
     setOpen((v) => {
@@ -634,7 +640,7 @@ function TreeRow({
     const showDraftInside =
       !!draftFolder &&
       draftFolder.parentPath === node.path &&
-      open &&
+      effectivelyOpen &&
       onDraftConfirm &&
       onDraftCancel;
 
@@ -654,6 +660,7 @@ function TreeRow({
         ) : (
           <div
             className={`tree-item${isSelected ? " selected" : ""}${isFolderDrop ? " drop-over" : ""}${isInsertBefore ? " drop-insert-before" : ""}${isInsertAfter ? " drop-insert-after" : ""}`}
+            data-path={node.path}
             style={{ paddingLeft: 10 + depth * 14 }}
             draggable={nativeDrag}
             {...longPress}
@@ -699,7 +706,7 @@ function TreeRow({
             }}
           >
             <span className="tree-chevron">
-              <ChevronIcon open={open} />
+              <ChevronIcon open={effectivelyOpen} />
             </span>
             {!hidePinBadge && pinnedPaths?.has(node.path) && (
               <span className="tree-pin-icon" aria-hidden="true">
@@ -709,7 +716,7 @@ function TreeRow({
             <span className="tree-name">{node.name}</span>
           </div>
         )}
-        {open && (
+        {effectivelyOpen && (
           <div
             className={`tree-children${isFolderDrop ? " drop-over" : ""}`}
             onDragOver={
@@ -795,6 +802,7 @@ function TreeRow({
   return (
     <div
       className={`tree-item${treeFocus !== "folder" && activePath === node.path ? " active" : ""}${isInsertBefore ? " drop-insert-before" : ""}${isInsertAfter ? " drop-insert-after" : ""}`}
+      data-path={node.path}
       style={{ paddingLeft: 10 + depth * 14 + 14 }}
       draggable={nativeDrag}
       {...longPress}
@@ -926,7 +934,17 @@ function RenameRow({
             finish(false);
           }
         }}
-        onBlur={() => finish(true)}
+        onBlur={() => {
+          // Defer so a duplicate rename input (or re-focus) can steal focus first.
+          window.setTimeout(() => {
+            if (doneRef.current) return;
+            if (document.activeElement === inputRef.current) return;
+            if (document.activeElement?.classList.contains("tree-draft-input")) {
+              return;
+            }
+            finish(true);
+          }, 0);
+        }}
       />
     </div>
   );

@@ -266,7 +266,7 @@ SSE 이벤트 예: `session`, `token`, `text`, `tool`, `tool_result`, `note_upda
 | 방식 | 적합한 경우 | 진입점 |
 |---|---|---|
 | **SKILL** | AgentCore / LangGraph 런타임에서 스크립트로 vault 조작 | [my-vaults](https://github.com/kyopark2014/agentic-work/tree/main/runtime_agent/langgraph/skills/my-vaults) |
-| **MCP** | MCP 클라이언트·다른 AgentCore 앱에서 도구로 vault 조작 | [`MCP/use-vault/`](MCP/use-vault/) + [`create_mcp.py`](create_mcp.py) |
+| **MCP** | MCP 클라이언트·다른 AgentCore 앱에서 도구로 vault 조작 | [`MCP/use-vault/`](MCP/use-vault/), [`MCP/search-note/`](MCP/search-note/) + [`create_mcp.py`](create_mcp.py) |
 
 인증: Secrets Manager `ob-note/vault-agent-token` (또는 동일 값의 `agentic-work/vault-agent-token`) → `Authorization: VaultAgent …`.
 
@@ -343,50 +343,70 @@ harness-work의 KB MCP는 **Gateway + Runtime**이지만, OB Note는 **Runtime M
 
 | 경로 | 역할 |
 |------|------|
-| [`MCP/use-vault/`](MCP/use-vault/) | Streamable HTTP MCP 서버 (`mcp_server_use_vault.py` + `vault_client.py`) |
-| [`create_mcp.py`](create_mcp.py) | Docker → ECR → AgentCore Runtime(MCP) 배포, `config.json`에 URL/ARN 기록 |
+| [`MCP/use-vault/`](MCP/use-vault/) | vault 읽기/쓰기 Streamable HTTP MCP + [`installer.py`](MCP/use-vault/installer.py) / [`uninstaller.py`](MCP/use-vault/uninstaller.py) |
+| [`MCP/search-note/`](MCP/search-note/) | Notes 그래프 검색 MCP + [`installer.py`](MCP/search-note/installer.py) / [`uninstaller.py`](MCP/search-note/uninstaller.py) |
+| [`create_mcp.py`](create_mcp.py) | 멀티 타겟 MCP 배포 헬퍼 (`--target use-vault\|search-note\|all`) |
 
 MCP 서버는 vault 저장소를 직접 열지 않고 `OB_DOCS_URL`의 HTTP API를 호출합니다.  
 도구마다 **`actor_id`**(계정 email/login id)가 필수이며, Runtime은 `VAULT_AGENT_TOKEN`(Secrets Manager `ob-note/vault-agent-token`)으로 `Authorization: VaultAgent …`를 서명합니다.
 
 ```text
 Other app (SigV4)
-  → AgentCore Runtime MCP  URL  (use_vault_mcp_url)
-       → MCP tools (vault_read / vault_write / … + actor_id)
+  → AgentCore Runtime MCP  URL  (use_vault_mcp_url / search_note_mcp_url)
+       → MCP tools (+ actor_id)
             → https://vault…/api/files|search|graph  (VaultAgent HMAC)
                  → {actor_id}/vault/…
 ```
 
 #### 도구
 
+**use-vault**
+
 | Tool | 설명 |
 |------|------|
 | `vault_health` / `vault_tree` / `vault_list` / `vault_read` | 조회 |
-| `vault_search` / `vault_graph` / `vault_backlinks` | 검색·그래프 |
+| `vault_search` / `vault_graph` / `vault_backlinks` | 전문 검색·위키링크 그래프 |
 | `vault_write` / `vault_append` / `vault_mkdir` / `vault_rename` / `vault_delete` | 쓰기 |
 | `vault_rebuild` | 그래프 재빌드 |
+
+**search-note**
+
+| Tool | 설명 |
+|------|------|
+| `search_note` | Notes Knowledge Graph 문서 검색 (BFS/DFS + excerpt). `vault_search`와 달리 그래프 순회 기반 |
 
 #### 배포
 
 ```bash
 cd ob-note
-python create_mcp.py
+# use-vault / search-note (권장: 패키지 installer — korea-weather 형식)
+python MCP/use-vault/installer.py
+python MCP/search-note/installer.py
+# 또는
+python installer.py --use-vault-only
+python installer.py --search-note-only
+python create_mcp.py --target all   # 둘 다 (호환)
+
+# 삭제
+python MCP/use-vault/uninstaller.py --yes
+python MCP/search-note/uninstaller.py --yes
+# 또는 python uninstaller.py --use-vault-only|--search-note-only --yes
 ```
 
-수행 내용:
+수행 내용 (타겟별):
 
 1. `ob-note/vault-agent-token` secret ensure  
-2. IAM role `role-use-vault-mcp-for-ob-note-{region}` (ECR pull, Secrets, logs)  
-3. `MCP/use-vault` 이미지 빌드 → ECR `use_vault_of_ob_note`  
+2. IAM role `role-{target}-mcp-for-ob-note-{region}` (ECR pull, Secrets, logs)  
+3. `MCP/<target>` 이미지 빌드 → ECR `{use_vault|search_note}_of_ob_note`  
 4. AgentCore Runtime 생성/갱신 (`serverProtocol=MCP`, `networkMode=PUBLIC`)  
 5. 계정 root에 `InvokeAgentRuntime` resource policy (Gateway 없이 동일 계정 호출 허용)  
-6. `config.json`에 `use_vault_mcp_runtime_arn` / `use_vault_mcp_url` 등 저장  
+6. `config.json`에 `{use_vault|search_note}_mcp_runtime_arn` / `_url` 등 저장  
 
 Runtime 엔드포인트는 **IAM SigV4**입니다. `remote_mcp`처럼 서명 없는 HTTP 클라이언트는 **403**이 납니다.
 
 #### 다른 앱 설정 (`mcp.json`)
 
-배포 후 `config.json`의 `use_vault_mcp_url`을 씁니다. 클라이언트는 `auth_type: aws_sigv4` + 서비스 `bedrock-agentcore`로 요청을 서명해야 합니다 (agentic-work websearch Gateway와 동일한 형식).
+배포 후 `config.json`의 `use_vault_mcp_url` / `search_note_mcp_url`을 씁니다. 클라이언트는 `auth_type: aws_sigv4` + 서비스 `bedrock-agentcore`로 요청을 서명해야 합니다 (agentic-work websearch Gateway와 동일한 형식).
 
 ```json
 {
@@ -394,6 +414,13 @@ Runtime 엔드포인트는 **IAM SigV4**입니다. `remote_mcp`처럼 서명 없
     "use-vault": {
       "type": "streamable_http",
       "url": "https://bedrock-agentcore.us-west-2.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-west-2%3AACCOUNT%3Aruntime%2Fuse_vault_of_ob_note-XXXX/invocations?qualifier=DEFAULT",
+      "auth_type": "aws_sigv4",
+      "auth_region": "us-west-2",
+      "auth_service": "bedrock-agentcore"
+    },
+    "search-note": {
+      "type": "streamable_http",
+      "url": "https://bedrock-agentcore.us-west-2.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-west-2%3AACCOUNT%3Aruntime%2Fsearch_note_of_ob_note-XXXX/invocations?qualifier=DEFAULT",
       "auth_type": "aws_sigv4",
       "auth_region": "us-west-2",
       "auth_service": "bedrock-agentcore"
@@ -405,14 +432,14 @@ Runtime 엔드포인트는 **IAM SigV4**입니다. `remote_mcp`처럼 서명 없
 | 필드 | 값 |
 |------|-----|
 | `type` | `streamable_http` |
-| `url` | `config.json` → `use_vault_mcp_url` |
+| `url` | `config.json` → `use_vault_mcp_url` 또는 `search_note_mcp_url` |
 | `auth_type` | `aws_sigv4` |
 | `auth_region` | Runtime 리전 (기본 `us-west-2`) |
 | `auth_service` | `bedrock-agentcore` |
 
 호출 principal에는 `bedrock-agentcore:InvokeAgentRuntime` (해당 Runtime ARN)이 필요합니다.  
 도구 호출 시 **`actor_id`에 vault 소유자 email**을 넘기세요.  
-로컬 개발만 할 때는 Gateway 없이 `python -m mcp_server_use_vault` → `http://localhost:8000/mcp`도 가능합니다 ([`MCP/use-vault/README.md`](MCP/use-vault/README.md)).
+로컬: [`MCP/use-vault/README.md`](MCP/use-vault/README.md), [`MCP/search-note/README.md`](MCP/search-note/README.md).
 
 ## 노트 deep link (로그인 필요)
 

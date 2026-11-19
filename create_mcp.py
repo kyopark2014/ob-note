@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Deploy MCP/use-vault as an AgentCore Runtime (MCP protocol, IAM auth).
+"""Deploy MCP packages as AgentCore Runtimes (MCP protocol, IAM auth).
 
 Unlike harness-work (Gateway + Runtime target), this script only creates the
 Runtime MCP endpoint. Other apps connect with SigV4 to the Runtime URL.
 
 Usage:
-  python create_mcp.py
+  python create_mcp.py                      # use-vault (default)
+  python create_mcp.py --target search-note
+  python create_mcp.py --target all
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -35,9 +38,39 @@ logger = logging.getLogger("ob-note-create-mcp")
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
-MCP_DIR = ROOT / "MCP" / "use-vault"
-MCP_CONFIG_PATH = MCP_DIR / "config.json"
 VAULT_AGENT_SECRET = "ob-note/vault-agent-token"
+
+
+@dataclass(frozen=True)
+class McpTarget:
+    """One Streamable-HTTP MCP package under MCP/<dir>."""
+
+    key: str  # CLI / logical name: use-vault | search-note
+    dir_name: str  # MCP/<dir_name>
+    runtime_prefix: str  # ECR / runtime name prefix before _of_{project}
+    role_slug: str  # IAM role fragment, e.g. use-vault-mcp
+    description: str
+    config_prefix: str  # config.json key prefix, e.g. use_vault_mcp
+
+
+TARGETS: dict[str, McpTarget] = {
+    "use-vault": McpTarget(
+        key="use-vault",
+        dir_name="use-vault",
+        runtime_prefix="use_vault",
+        role_slug="use-vault-mcp",
+        description="ob-note use-vault Streamable HTTP MCP",
+        config_prefix="use_vault_mcp",
+    ),
+    "search-note": McpTarget(
+        key="search-note",
+        dir_name="search-note",
+        runtime_prefix="search_note",
+        role_slug="search-note-mcp",
+        description="ob-note search-note Streamable HTTP MCP (Notes graph query)",
+        config_prefix="search_note_mcp",
+    ),
+}
 
 
 def load_config() -> dict[str, Any]:
@@ -78,9 +111,17 @@ def _sharing_url(cfg: dict[str, Any]) -> str:
     ).rstrip("/")
 
 
-def runtime_name(project: str) -> str:
-    """ECR / Agent Runtime name: use_vault_of_{project} (hyphens → underscores)."""
-    return f"use_vault_of_{project}".replace("-", "_")
+def runtime_name(target: McpTarget, project: str) -> str:
+    """ECR / Agent Runtime name: {prefix}_of_{project} (hyphens → underscores)."""
+    return f"{target.runtime_prefix}_of_{project}".replace("-", "_")
+
+
+def mcp_dir(target: McpTarget) -> Path:
+    return ROOT / "MCP" / target.dir_name
+
+
+def mcp_config_path(target: McpTarget) -> Path:
+    return mcp_dir(target) / "config.json"
 
 
 def mcp_runtime_url(agent_runtime_arn: str, region: str) -> str:
@@ -104,7 +145,7 @@ def ensure_vault_agent_token(sm, project: str) -> str:
     resp = sm.create_secret(
         Name=secret_id,
         SecretString=value,
-        Description="HMAC token for use-vault MCP → ob-note vault API auth",
+        Description="HMAC token for MCP runtimes → ob-note vault API auth",
         Tags=[
             {"Key": "Name", "Value": secret_id},
             {"Key": "Project", "Value": project},
@@ -148,17 +189,19 @@ def attach_inline_policy(iam, role_name: str, policy_name: str, policy: dict) ->
     )
 
 
-def create_use_vault_mcp_role(
+def create_mcp_runtime_role(
     iam,
+    target: McpTarget,
     *,
     account_id: str,
     region: str,
     project: str,
     s3_bucket: str,
 ) -> str:
-    role_name = f"role-use-vault-mcp-for-{project}-{region}"
+    role_name = f"role-{target.role_slug}-for-{project}-{region}"
     if len(role_name) > 64:
-        role_name = f"role-uv-mcp-{project[:20]}-{region}"[:64]
+        short = target.role_slug.replace("-mcp", "")[:12]
+        role_name = f"role-{short}-mcp-{project[:20]}-{region}"[:64]
 
     assume_role_policy = {
         "Version": "2012-10-17",
@@ -179,7 +222,7 @@ def create_use_vault_mcp_role(
         iam,
         role_name,
         assume_role_policy,
-        description="Execution role for use-vault MCP AgentCore Runtime",
+        description=f"Execution role for {target.key} MCP AgentCore Runtime",
     )
 
     secret_arn = (
@@ -250,11 +293,30 @@ def create_use_vault_mcp_role(
     attach_inline_policy(
         iam,
         role_name,
-        f"use-vault-mcp-inline-for-{project}"[:128],
+        f"{target.role_slug}-inline-for-{project}"[:128],
         {"Version": "2012-10-17", "Statement": statements},
     )
-    logger.info("use-vault MCP Runtime role ready: %s", role_arn)
+    logger.info("%s MCP Runtime role ready: %s", target.key, role_arn)
     return role_arn
+
+
+# Backward-compatible alias used by installer / older callers
+def create_use_vault_mcp_role(
+    iam,
+    *,
+    account_id: str,
+    region: str,
+    project: str,
+    s3_bucket: str,
+) -> str:
+    return create_mcp_runtime_role(
+        iam,
+        TARGETS["use-vault"],
+        account_id=account_id,
+        region=region,
+        project=project,
+        s3_bucket=s3_bucket,
+    )
 
 
 def ensure_ecr_repository(ecr, repository_name: str) -> None:
@@ -289,19 +351,21 @@ def run_docker(cmd: list[str], description: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def push_use_vault_mcp_image(
+def push_mcp_image(
+    target: McpTarget,
     *,
     account_id: str,
     region: str,
     project: str,
 ) -> tuple[str, str]:
+    package_dir = mcp_dir(target)
     if not shutil.which("docker"):
-        raise RuntimeError("docker is required to build the use-vault MCP image")
-    if not MCP_DIR.is_dir():
-        raise RuntimeError(f"MCP directory not found: {MCP_DIR}")
+        raise RuntimeError(f"docker is required to build the {target.key} MCP image")
+    if not package_dir.is_dir():
+        raise RuntimeError(f"MCP directory not found: {package_dir}")
 
     ecr = boto3.client("ecr", region_name=region)
-    repository = runtime_name(project)
+    repository = runtime_name(target, project)
     image_tag = datetime.now().strftime("%Y%m%d%H%M%S")
     local_tag = f"{repository}:{image_tag}"
     ecr_uri = f"{account_id}.dkr.ecr.{region}.amazonaws.com/{repository}:{image_tag}"
@@ -319,14 +383,28 @@ def push_use_vault_mcp_image(
             "--sbom=false",
             "-t",
             local_tag,
-            str(MCP_DIR),
+            str(package_dir),
         ],
-        "Building Docker image",
+        f"Building {target.key} Docker image",
     )
     run_docker(["docker", "tag", local_tag, ecr_uri], "Tagging for ECR")
     run_docker(["docker", "push", ecr_uri], "Pushing to ECR")
-    logger.info("Pushed use-vault MCP image: %s", ecr_uri)
+    logger.info("Pushed %s MCP image: %s", target.key, ecr_uri)
     return repository, image_tag
+
+
+def push_use_vault_mcp_image(
+    *,
+    account_id: str,
+    region: str,
+    project: str,
+) -> tuple[str, str]:
+    return push_mcp_image(
+        TARGETS["use-vault"],
+        account_id=account_id,
+        region=region,
+        project=project,
+    )
 
 
 def find_agent_runtime_by_name(control, name: str) -> Optional[dict]:
@@ -344,8 +422,9 @@ def find_agent_runtime_by_name(control, name: str) -> Optional[dict]:
             return None
 
 
-def create_or_update_use_vault_mcp_runtime(
+def create_or_update_mcp_runtime(
     control,
+    target: McpTarget,
     *,
     account_id: str,
     region: str,
@@ -373,7 +452,7 @@ def create_or_update_use_vault_mcp_runtime(
         logger.info("Updating existing runtime: %s (%s)", name, runtime_id)
         response = control.update_agent_runtime(
             agentRuntimeId=runtime_id,
-            description="ob-note use-vault Streamable HTTP MCP",
+            description=target.description,
             agentRuntimeArtifact={
                 "containerConfiguration": {"containerUri": container_uri}
             },
@@ -388,7 +467,7 @@ def create_or_update_use_vault_mcp_runtime(
         logger.info("Creating runtime: %s", name)
         response = control.create_agent_runtime(
             agentRuntimeName=name,
-            description="ob-note use-vault Streamable HTTP MCP",
+            description=target.description,
             agentRuntimeArtifact={
                 "containerConfiguration": {"containerUri": container_uri}
             },
@@ -401,14 +480,46 @@ def create_or_update_use_vault_mcp_runtime(
         agent_runtime_arn = response["agentRuntimeArn"]
 
     url = mcp_runtime_url(agent_runtime_arn, region)
-    logger.info("use-vault MCP Runtime: %s", agent_runtime_arn)
+    logger.info("%s MCP Runtime: %s", target.key, agent_runtime_arn)
     logger.info("MCP URL: %s", url)
     return {
         "agent_runtime_arn": agent_runtime_arn,
-        "use_vault_mcp_url": url,
+        "mcp_url": url,
         "ecr_repository": repository,
         "latest_image_tag": image_tag,
         "agent_runtime_role": role_arn,
+    }
+
+
+def create_or_update_use_vault_mcp_runtime(
+    control,
+    *,
+    account_id: str,
+    region: str,
+    project: str,
+    role_arn: str,
+    repository: str,
+    image_tag: str,
+    ob_docs_url: str,
+) -> dict[str, str]:
+    info = create_or_update_mcp_runtime(
+        control,
+        TARGETS["use-vault"],
+        account_id=account_id,
+        region=region,
+        project=project,
+        role_arn=role_arn,
+        repository=repository,
+        image_tag=image_tag,
+        ob_docs_url=ob_docs_url,
+    )
+    # Preserve legacy key name for callers expecting use_vault_mcp_url
+    return {
+        "agent_runtime_arn": info["agent_runtime_arn"],
+        "use_vault_mcp_url": info["mcp_url"],
+        "ecr_repository": info["ecr_repository"],
+        "latest_image_tag": info["latest_image_tag"],
+        "agent_runtime_role": info["agent_runtime_role"],
     }
 
 
@@ -444,8 +555,12 @@ def put_runtime_resource_policy(
         logger.warning("Could not put resource policy on MCP Runtime: %s", e)
 
 
-def sync_mcp_package_config(cfg: dict[str, Any], ob_docs_url: str) -> None:
-    """Keep MCP/use-vault/config.json aligned with app config."""
+def sync_mcp_package_config(
+    target: McpTarget,
+    cfg: dict[str, Any],
+    ob_docs_url: str,
+) -> None:
+    """Keep MCP/<pkg>/config.json aligned with app config."""
     payload = {
         "s3_bucket": cfg.get("s3_bucket") or "",
         "sharing_url": ob_docs_url,
@@ -453,11 +568,12 @@ def sync_mcp_package_config(cfg: dict[str, Any], ob_docs_url: str) -> None:
         "region": _region(cfg),
         "project_name": _project_name(cfg),
     }
-    MCP_CONFIG_PATH.write_text(
+    path = mcp_config_path(target)
+    path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    logger.info("Updated %s", MCP_CONFIG_PATH)
+    logger.info("Updated %s", path)
 
 
 def wait_role_propagated(seconds: int = 12) -> None:
@@ -465,16 +581,98 @@ def wait_role_propagated(seconds: int = 12) -> None:
     time.sleep(seconds)
 
 
+def deploy_one_mcp(
+    target: McpTarget,
+    *,
+    cfg: dict[str, Any],
+    account_id: str,
+    region: str,
+    project: str,
+    ob_docs_url: str,
+    s3_bucket: str,
+    iam,
+    control,
+) -> dict[str, str]:
+    logger.info("=== Deploy %s ===", target.key)
+    logger.info("[1/4] Sync MCP package config + IAM role")
+    sync_mcp_package_config(target, cfg, ob_docs_url)
+    role_arn = create_mcp_runtime_role(
+        iam,
+        target,
+        account_id=account_id,
+        region=region,
+        project=project,
+        s3_bucket=s3_bucket,
+    )
+    wait_role_propagated()
+
+    logger.info("[2/4] Build & push Docker image from %s", mcp_dir(target))
+    repository, image_tag = push_mcp_image(
+        target,
+        account_id=account_id,
+        region=region,
+        project=project,
+    )
+
+    logger.info("[3/4] Create/update AgentCore Runtime (MCP protocol)")
+    mcp_info = create_or_update_mcp_runtime(
+        control,
+        target,
+        account_id=account_id,
+        region=region,
+        project=project,
+        role_arn=role_arn,
+        repository=repository,
+        image_tag=image_tag,
+        ob_docs_url=ob_docs_url,
+    )
+
+    logger.info("[4/4] Resource policy (account invoke)")
+    put_runtime_resource_policy(
+        control,
+        agent_runtime_arn=mcp_info["agent_runtime_arn"],
+        account_id=account_id,
+    )
+
+    prefix = target.config_prefix
+    cfg[f"{prefix}_runtime_arn"] = mcp_info["agent_runtime_arn"]
+    cfg[f"{prefix}_url"] = mcp_info["mcp_url"]
+    cfg[f"{prefix}_role"] = mcp_info["agent_runtime_role"]
+    cfg[f"{prefix}_ecr_repository"] = mcp_info["ecr_repository"]
+    cfg[f"{prefix}_image_tag"] = mcp_info["latest_image_tag"]
+
+    logger.info("Done %s.", target.key)
+    logger.info("  runtime_arn = %s", cfg[f"{prefix}_runtime_arn"])
+    logger.info("  mcp_url     = %s", cfg[f"{prefix}_url"])
+    return mcp_info
+
+
+def _resolve_targets(raw: str) -> list[McpTarget]:
+    value = (raw or "use-vault").strip().lower()
+    if value in ("all", "*"):
+        return [TARGETS["use-vault"], TARGETS["search-note"]]
+    if value not in TARGETS:
+        choices = ", ".join([*TARGETS.keys(), "all"])
+        raise SystemExit(f"Unknown --target {raw!r}; choose one of: {choices}")
+    return [TARGETS[value]]
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
         description=(
-            "Deploy MCP/use-vault as AgentCore Runtime (MCP protocol, IAM). "
-            "No Gateway — other apps connect with SigV4 to use_vault_mcp_url."
+            "Deploy MCP packages as AgentCore Runtime (MCP protocol, IAM). "
+            "No Gateway — other apps connect with SigV4 to the MCP URL."
         )
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--target",
+        default="use-vault",
+        help="MCP to deploy: use-vault (default), search-note, or all",
+    )
+    args = parser.parse_args(argv)
+    targets = _resolve_targets(args.target)
 
     cfg = load_config()
     project = _project_name(cfg)
@@ -497,61 +695,28 @@ def main(argv: list[str] | None = None) -> int:
     sm = boto3.client("secretsmanager", region_name=region)
     control = boto3.client("bedrock-agentcore-control", region_name=region)
 
-    logger.info("[1/5] Ensure vault-agent-token secret (%s)", f"{project}/vault-agent-token")
+    logger.info("Ensure vault-agent-token secret (%s)", f"{project}/vault-agent-token")
     secret_arn = ensure_vault_agent_token(sm, project)
     logger.info("  secret ARN: %s", secret_arn)
 
-    logger.info("[2/5] Sync MCP package config + IAM role")
-    sync_mcp_package_config(cfg, ob_docs_url)
-    role_arn = create_use_vault_mcp_role(
-        iam,
-        account_id=account_id,
-        region=region,
-        project=project,
-        s3_bucket=s3_bucket,
-    )
-    wait_role_propagated()
+    for target in targets:
+        deploy_one_mcp(
+            target,
+            cfg=cfg,
+            account_id=account_id,
+            region=region,
+            project=project,
+            ob_docs_url=ob_docs_url,
+            s3_bucket=s3_bucket,
+            iam=iam,
+            control=control,
+        )
 
-    logger.info("[3/5] Build & push Docker image from %s", MCP_DIR)
-    repository, image_tag = push_use_vault_mcp_image(
-        account_id=account_id,
-        region=region,
-        project=project,
-    )
-
-    logger.info("[4/5] Create/update AgentCore Runtime (MCP protocol)")
-    mcp_info = create_or_update_use_vault_mcp_runtime(
-        control,
-        account_id=account_id,
-        region=region,
-        project=project,
-        role_arn=role_arn,
-        repository=repository,
-        image_tag=image_tag,
-        ob_docs_url=ob_docs_url,
-    )
-
-    logger.info("[5/5] Resource policy (account invoke) + save config")
-    put_runtime_resource_policy(
-        control,
-        agent_runtime_arn=mcp_info["agent_runtime_arn"],
-        account_id=account_id,
-    )
-
-    cfg["use_vault_mcp_runtime_arn"] = mcp_info["agent_runtime_arn"]
-    cfg["use_vault_mcp_url"] = mcp_info["use_vault_mcp_url"]
-    cfg["use_vault_mcp_role"] = mcp_info["agent_runtime_role"]
-    cfg["use_vault_mcp_ecr_repository"] = mcp_info["ecr_repository"]
-    cfg["use_vault_mcp_image_tag"] = mcp_info["latest_image_tag"]
     save_config(cfg)
-
-    logger.info("Done.")
-    logger.info("  runtime_arn = %s", cfg["use_vault_mcp_runtime_arn"])
-    logger.info("  mcp_url     = %s", cfg["use_vault_mcp_url"])
     logger.info(
         "Other apps: use mcp.json with type=streamable_http, "
         "auth_type=aws_sigv4, auth_service=bedrock-agentcore "
-        "(see README ### Vault MCP)."
+        "(see README ### MCP 활용)."
     )
     return 0
 
