@@ -21,3 +21,4 @@ venv/
 .dockerignore
 installer.py
 uninstaller.py
+test_search_note.py
