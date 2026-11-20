@@ -34,15 +34,26 @@ def os_environ_region() -> str:
 
 
 def _max_tokens(model_type: str, model_id: str) -> int:
+    """Match agentic-work ``get_max_output_tokens`` / ``get_chat`` caps."""
     mid = (model_id or "").lower()
     if model_type == "claude":
-        if "haiku" in mid:
-            return 8192
-        return 16384
+        if "fable" in mid:
+            return 128000
+        if "claude-sonnet-5" in mid or "claude-5-sonnet" in mid:
+            return 128000
+        if "claude-opus-5" in mid or "claude-5-opus" in mid:
+            return 128000
+        if "claude-opus-4-6" in mid or "claude-opus-4-7" in mid:
+            return 128000
+        if "claude-opus-4-5" in mid:
+            return 64000
+        if "claude-opus-4" in mid or "claude-4-opus" in mid:
+            return 32000
+        if "claude-sonnet-4" in mid or "claude-4-sonnet" in mid or "claude-haiku-4" in mid:
+            return 64000
+        return 8192
     if model_type == "kimi":
         return 16384
-    if model_type == "openai":
-        return 8192
     return 5120
 
 
