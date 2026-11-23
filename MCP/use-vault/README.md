@@ -102,8 +102,9 @@ ECR + AgentCore Runtime(MCP, IAM SigV4)만 배포합니다 (Gateway 없음).
 `ui://vault/viewer.html`에 연결되어 MCP Apps 호스트(agentic-work, Claude 등)에서 채팅 안 UI로 표시됩니다.
 
 - 인라인: 검색/목록은 카드 캐러셀(최대 8개), 노트는 요약 카드. 전체 화면: 트리·본문·백링크·그래프.
-- 결과는 `CallToolResult`: `content`는 기존 JSON 텍스트 그대로(모델이 읽는 값), `structuredContent`에
-  `{ok, kind, ...}`와 노트마다 deep link `url`을 담습니다. 쓰기 도구도 `path`/`url`을 반환합니다.
+- 결과는 `CallToolResult`: `content` JSON(모델이 읽는 값)과 `structuredContent` 모두
+  `{ok, kind, ...}`와 노트마다 deep link `url`을 담습니다(`content`에도 `ok`/`kind`를 넣어
+  호스트가 `structuredContent`를 누락해도 MCP App UI 폴백이 동작). 쓰기 도구도 `path`/`url`을 반환합니다.
   에이전트는 채팅 목차·목록에 `[제목](url)` 마크다운 링크를 포함해야 합니다 (MCP Apps UI와 병행).
 - 코드: `vault_apps.py`(도구·리소스), `ui/`(뷰어 소스, `python3 MCP/use-vault/ui/build.py`로 `ui/dist` 생성 후 **커밋**).
 - UI 변경 후에는 이 MCP 런타임을 다시 배포해야 합니다.

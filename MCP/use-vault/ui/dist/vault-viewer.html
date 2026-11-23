@@ -862,15 +862,24 @@ function carousel(label, list) {
 }
 
 function inlineNote(n) {
-  const facts = [folder(n.path) || "(루트)", n.updated_at ? "수정 " + kit.fmtDate(n.updated_at) : "", n.word_count ? n.word_count + "단어" : "",
-    (n.backlinks || []).length ? "백링크 " + n.backlinks.length : ""].filter(Boolean);
-  const fsBtn = n.path && canFullscreen()
-    ? `<button class="k-btn k-primary" data-act="open-note" data-path="${kit.esc(n.path)}">전체 화면으로 열기</button>`
+  const path = n.path || (S.input && S.input.path) || "";
+  const title = n.title || stem(path) || "노트";
+  const facts = [
+    folder(path) || (path ? "" : "(경로 없음)"),
+    path ? path : "",
+    n.updated_at ? "수정 " + kit.fmtDate(n.updated_at) : "",
+    n.word_count ? n.word_count + "단어" : "",
+    (n.backlinks || []).length ? "백링크 " + n.backlinks.length : "",
+  ].filter(Boolean);
+  const excerpt = kit.excerpt(n.content, 320)
+    || (S.noteLoading ? "본문 미리보기를 불러오는 중…" : "본문 미리보기가 없습니다. 전체 보기에서 확인할 수 있습니다.");
+  const fsBtn = path && canFullscreen()
+    ? `<button class="k-btn k-primary" data-act="open-note" data-path="${kit.esc(path)}">전체 화면으로 열기</button>`
     : (canFullscreen() ? `<button class="k-btn k-primary" data-act="expand">전체 보기</button>` : "");
   return `<div class="vv-note">
-    <div class="vv-title">${kit.esc(n.title || stem(n.path))}</div>
+    <div class="vv-title">${kit.esc(title)}</div>
     <div class="vv-facts k-caption k-faint">${facts.map((f) => `<span>${kit.esc(f)}</span>`).join("")}</div>
-    <div class="vv-excerpt k-muted">${kit.esc(kit.excerpt(n.content, 320))}</div>
+    <div class="vv-excerpt k-muted">${kit.esc(excerpt)}</div>
     <div class="vv-actions">${fsBtn}
       ${kit.safeUrl(n.url) ? `<button class="k-btn" data-act="open" data-url="${kit.esc(n.url)}">ob-note에서 열기</button>` : ""}</div></div>`;
 }
@@ -1500,6 +1509,40 @@ root.addEventListener("keydown", (ev) => {
   }
 });
 
+function noteNeedsHydrate(r) {
+  if (!r || r.kind !== "note") return false;
+  const path = r.path || (S.input && S.input.path) || "";
+  if (!path) return false;
+  const content = String(r.content || "").trim();
+  const title = String(r.title || "").trim();
+  return !content || content.length < 80 || !title;
+}
+
+/** When the host only delivered a stub note card, re-read via the Apps proxy. */
+async function hydrateNoteResult() {
+  const path = (S.result && S.result.path) || (S.input && S.input.path);
+  if (!path || !actor()) return;
+  S.noteLoading = true;
+  render();
+  try {
+    const data = await call("vault_read", { path });
+    if (!data || data.ok === false) return;
+    S.result = {
+      ...(S.result || {}),
+      ...data,
+      ok: true,
+      kind: "note",
+      path: data.path || path,
+      title: data.title || stem(data.path || path),
+    };
+  } catch (_) {
+    /* keep stub card */
+  } finally {
+    S.noteLoading = false;
+    render();
+  }
+}
+
 // ---------------------------------------------------------------- lifecycle
 app.ontoolinput = (p) => { S.input = (p && p.arguments) || null; };
 app.ontoolresult = (r) => {
@@ -1507,8 +1550,15 @@ app.ontoolresult = (r) => {
   if (S.result.ok === false) S.result = { kind: "none" };
   S.tree = null; S.graph = null; S.note = null; S.filter = "";
   S.viewMode = "preview"; S.draft = ""; S.savedContent = ""; S.dirty = false; S.saving = false; S.saveError = null;
+  S.noteLoading = false;
+  if (S.result && S.result.kind === "note") {
+    const path = S.result.path || (S.input && S.input.path);
+    if (path && !S.result.path) S.result.path = path;
+    if (path && !S.result.title) S.result.title = stem(path);
+  }
   render();
   if (isFs()) enterFullscreen();
+  else if (noteNeedsHydrate(S.result)) hydrateNoteResult();
 };
 app.addEventListener("hostcontextchanged", (changed) => {
   const wasFs = isFs();

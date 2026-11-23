@@ -1,9 +1,10 @@
 """MCP Apps (interactive UI) for the use-vault MCP server.
 
 Six read tools carry ``_meta.ui.resourceUri`` -> ``ui://vault/viewer.html``. Each returns
-the same JSON text as before (what the model reads) plus a ``structuredContent`` object the
-UI draws from: ``{"ok": true, "kind": "search|note|list|tree|graph|backlinks", ...payload}``
-with a deep link ``url`` on every note.
+JSON text (what the model reads) and ``structuredContent`` the UI draws from — both carry
+``{"ok": true, "kind": "search|note|list|tree|graph|backlinks", ...payload}`` with a deep
+link ``url`` on every note (content text keeps ok/kind so UI fallback works if a host
+drops structuredContent).
 
 The viewer supports Preview / Edit / Save (calls ``vault_write`` via the host proxy).
 HTML is built from ``ui/`` (``python3 MCP/use-vault/ui/build.py``).
@@ -84,15 +85,18 @@ def _require_actor(actor_id: str) -> str:
 
 def _result(kind: str, payload: Any, text: str | None = None) -> CallToolResult:
     body = with_urls(payload) if isinstance(payload, dict) else {"data": payload}
-    # Text + structuredContent both include deep-link ``url`` (my-vaults parity).
+    # Put ok/kind in both layers: hosts that drop structuredContent still leave
+    # content text, and the vault viewer falls back to parsing that JSON.
+    enriched = {"ok": True, "kind": kind, **body}
     return CallToolResult(
         content=[
             TextContent(
                 type="text",
-                text=text if text is not None else vault.to_json(body),
+                # Explicit ``text`` (e.g. vault_read raw=True) stays as-is for the model.
+                text=text if text is not None else vault.to_json(enriched),
             )
         ],
-        structured_content={"ok": True, "kind": kind, **body},
+        structured_content=enriched,
     )
 
 
@@ -145,6 +149,31 @@ def vault_list(actor_id: str, prefix: str = "", ext: str = "md") -> CallToolResu
         return _error(e)
 
 
+def _note_ui_payload(body: dict[str, Any]) -> dict[str, Any]:
+    """Compact structuredContent for MCP App hosts (SSE/srcdoc size limits).
+
+    Inline cards only need metadata + a short excerpt. Fullscreen re-fetches the
+    note (and HTML preview) through the host ``tools/call`` proxy.
+    """
+    content = str(body.get("content") or "")
+    keep = (
+        "path",
+        "title",
+        "url",
+        "updated_at",
+        "created_at",
+        "word_count",
+        "char_count",
+        "tags",
+        "backlinks",
+        "note_id",
+        "size_bytes",
+    )
+    out = {k: body[k] for k in keep if k in body}
+    out["content"] = content if len(content) <= 2000 else content[:2000]
+    return out
+
+
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
 def vault_read(actor_id: str, path: str, raw: bool = False) -> CallToolResult:
     """
@@ -159,15 +188,27 @@ def vault_read(actor_id: str, path: str, raw: bool = False) -> CallToolResult:
         uid = _require_actor(actor_id)
         path = vault.normalize_vault_path(path)
         logger.info("vault_read actor_id=%s path=%s raw=%s", uid, path, raw)
-        # html=1: MCP App Preview needs content_html; the web UI omits it for speed.
+        # Skip html=1: embedding content_html (~2× note size) in agent→host mcpApp
+        # payloads breaks the vault viewer. Preview HTML is loaded on demand via
+        # vault_render / a host-proxied vault_read.
         payload = vault.api_request(
             "GET",
             "/api/files/read",
             user_id=uid,
-            query={"path": path, "html": "1"},
+            query={"path": path},
         )
-        text = str(payload.get("content") or "") if raw else None
-        return _result("note", payload, text)
+        if raw:
+            return _result("note", payload, str(payload.get("content") or ""))
+        body = with_urls(payload) if isinstance(payload, dict) else {"data": payload}
+        if isinstance(body, dict):
+            body.pop("content_html", None)
+            model = {"ok": True, "kind": "note", **body}
+            ui = {"ok": True, "kind": "note", **_note_ui_payload(body)}
+            return CallToolResult(
+                content=[TextContent(type="text", text=vault.to_json(model))],
+                structured_content=ui,
+            )
+        return _result("note", payload)
     except Exception as e:
         return _error(e)
 
