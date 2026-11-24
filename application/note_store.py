@@ -45,6 +45,8 @@ PATH_INDEX = "path-index"
 INLINE_MAX_BYTES = 300_000
 FILE_PREFIX = "F#"
 TOMBSTONE_PREFIX = "X#"
+META_PREFIX = "META#"
+UI_PREFS_SK = f"{META_PREFIX}ui"
 HIDDEN_FOLDER_MARKERS = {".keep", ".gitkeep"}
 FOLDER_MARKER = ".keep"
 
@@ -2002,3 +2004,91 @@ def verify(*, user_id: Optional[str] = None, deep: bool = True) -> dict[str, Any
         "md5_mismatch": md5_mismatch,
         "only_in_s3": only_in_s3,
     }
+
+
+# ---------------------------------------------------------------------------
+# UI preferences (META#ui) — account-scoped, not mirrored to S3
+# ---------------------------------------------------------------------------
+
+
+def _from_ddb(value: Any) -> Any:
+    """Convert boto3 Decimal / nested structures into JSON-friendly types."""
+    if isinstance(value, list):
+        return [_from_ddb(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _from_ddb(v) for k, v in value.items()}
+    try:
+        from decimal import Decimal
+
+        if isinstance(value, Decimal):
+            if value % 1 == 0:
+                return int(value)
+            return float(value)
+    except Exception:  # noqa: BLE001
+        pass
+    return value
+
+
+def get_ui_prefs(*, user_id: Optional[str] = None) -> dict[str, Any]:
+    """Return the user's UI prefs map (empty dict when missing)."""
+    item = _table().get_item(
+        Key={"pk": _pk(user_id), "sk": UI_PREFS_SK},
+        ConsistentRead=True,
+    ).get("Item")
+    if not item:
+        return {}
+    prefs = item.get("prefs")
+    if not isinstance(prefs, dict):
+        return {}
+    out = _from_ddb(prefs)
+    if not isinstance(out, dict):
+        return {}
+    if item.get("updated_at") and "updated_at" not in out:
+        out["updated_at"] = item["updated_at"]
+    return out
+
+
+def put_ui_prefs(prefs: dict[str, Any], *, user_id: Optional[str] = None) -> dict[str, Any]:
+    """Replace the user's UI prefs. ``prefs`` must be a JSON-serializable dict."""
+    if not isinstance(prefs, dict):
+        raise NoteStoreError("prefs must be an object")
+    clean: dict[str, Any] = json_safe_prefs(prefs)
+    now = utc_now()
+    clean["updated_at"] = now
+    _table().put_item(
+        Item={
+            "pk": _pk(user_id),
+            "sk": UI_PREFS_SK,
+            "kind": "prefs",
+            "prefs": clean,
+            "updated_at": now,
+        }
+    )
+    return clean
+
+
+def json_safe_prefs(prefs: dict[str, Any]) -> dict[str, Any]:
+    """Drop None / empty-string values DynamoDB rejects; coerce plain types."""
+    out: dict[str, Any] = {}
+    for key, value in prefs.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, float):
+            out[key] = int(value) if value.is_integer() else str(value)
+        elif isinstance(value, (str, bool, int)):
+            out[key] = value
+        elif isinstance(value, list):
+            out[key] = [
+                x for x in value
+                if x is not None and x != "" and isinstance(x, (str, bool, int))
+            ]
+        elif isinstance(value, dict):
+            nested = {
+                str(k): (True if v in (True, "1", 1) else v)
+                for k, v in value.items()
+                if v is not None and v != "" and isinstance(v, (str, bool, int))
+            }
+            # Keep only true flags in skipConfirm-style maps; other bool maps keep as-is.
+            if nested:
+                out[key] = nested
+    return out

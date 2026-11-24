@@ -1,4 +1,4 @@
-const SHOW_IMAGES_KEY = "ob-note:view-show-images";
+import { getPrefs, patchPrefs } from "./uiPrefs";
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|ico|bmp|heic|avif)$/i;
 const VIDEO_EXT = /\.(mp4|m4v|webm)$/i;
@@ -23,17 +23,9 @@ export function isCompanionMediaFileName(name: string): boolean {
 }
 
 export function getShowImages(): boolean {
-  try {
-    return localStorage.getItem(SHOW_IMAGES_KEY) === "1";
-  } catch {
-    return false;
-  }
+  return getPrefs().showImages;
 }
 
 export function setShowImages(value: boolean): void {
-  try {
-    localStorage.setItem(SHOW_IMAGES_KEY, value ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
+  patchPrefs({ showImages: value });
 }

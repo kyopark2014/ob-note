@@ -2497,6 +2497,76 @@ a.modal-btn {
   line-height: 1.5;
 }
 
+.meeting-recover-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.meeting-recover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.meeting-recover-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.meeting-recover-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.meeting-recover-item:last-child {
+  border-bottom: none;
+}
+
+.meeting-recover-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.meeting-recover-when {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meeting-recover-status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.meeting-recover-status.status-completed {
+  color: #2f9e44;
+}
+
+.meeting-recover-status.status-failed {
+  color: #e03131;
+}
+
+.meeting-recover-status.status-in_progress,
+.meeting-recover-status.status-queued {
+  color: #f08c00;
+}
+
 .meeting-speaker-row,
 .meeting-view-row {
   display: flex;

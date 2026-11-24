@@ -25,7 +25,7 @@ S3 → 로컬 pull·병합이 없어지므로, 읽기 중 다른 작업이 파�
 | 키 | 값 |
 |---|---|
 | `pk` | `USER#{sanitized user segment}` |
-| `sk` | `F#{NFC path}` 파일/노트/폴더 · `X#{NFC path}#{id}` S3 삭제 tombstone |
+| `sk` | `F#{NFC path}` 파일/노트/폴더 · `X#{NFC path}#{id}` S3 삭제 tombstone · `META#ui` 계정 UI prefs (핀·정렬·테마 등, S3 미러 없음) |
 
 `path`를 sort key에 두는 이유: 경로 유일성이 조건식 없이 보장되고, 폴더 하위 조회가
 `begins_with(sk, 'F#폴더/')` 한 번의 Query가 됩니다. (노트 수백 개 규모에서 폴더 rename은 항목 재작성으로 충분)

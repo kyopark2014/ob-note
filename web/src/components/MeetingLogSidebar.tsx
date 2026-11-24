@@ -39,6 +39,14 @@ export function MeetingLogSidebar({
     recordedAt,
     hasDownloadableAudio,
     downloadAudio,
+    pendingJob,
+    recoverJobs,
+    recoverOpen,
+    setRecoverOpen,
+    recoverBusy,
+    resumePendingJob,
+    loadRecoverableJobs,
+    importRecoverableJob,
   } = meeting;
 
   const [editingTitle, setEditingTitle] = useState(false);
@@ -197,6 +205,84 @@ export function MeetingLogSidebar({
           </div>
 
           <p className="meeting-status">{status}</p>
+
+          <div className="meeting-recover-row">
+            {pendingJob?.jobName ? (
+              <button
+                type="button"
+                className="meeting-batch-btn"
+                disabled={listening || batchBusy || recoverBusy}
+                onClick={() => void resumePendingJob()}
+                title="대기 중이던 Transcribe 작업을 이어서 확인합니다"
+              >
+                {batchBusy ? "확인 중…" : "대기 중 변환 이어받기"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="meeting-batch-btn"
+              disabled={listening || batchBusy || recoverBusy}
+              onClick={() => {
+                if (recoverOpen) {
+                  setRecoverOpen(false);
+                  return;
+                }
+                void loadRecoverableJobs();
+              }}
+              title="이전에 완료된 배치 변환을 불러옵니다"
+            >
+              {recoverBusy && !batchBusy
+                ? "목록 불러오는 중…"
+                : recoverOpen
+                  ? "변환 목록 닫기"
+                  : "변환 결과 불러오기"}
+            </button>
+          </div>
+
+          {recoverOpen ? (
+            <div className="meeting-recover-list" role="list" aria-label="이전 변환 목록">
+              {recoverJobs.length === 0 ? (
+                <p className="meeting-recover-empty">표시할 이전 변환이 없습니다.</p>
+              ) : (
+                recoverJobs.map((job) => {
+                  const created = job.createdAt
+                    ? new Date(job.createdAt).toLocaleString("ko-KR")
+                    : "시간 미상";
+                  const label =
+                    job.status === "COMPLETED"
+                      ? "완료"
+                      : job.status === "FAILED"
+                        ? "실패"
+                        : job.status === "IN_PROGRESS" || job.status === "QUEUED"
+                          ? "진행 중"
+                          : job.status;
+                  return (
+                    <div key={job.jobName} className="meeting-recover-item" role="listitem">
+                      <div className="meeting-recover-meta">
+                        <span className="meeting-recover-when">{created}</span>
+                        <span className={`meeting-recover-status status-${String(job.status || "").toLowerCase()}`}>
+                          {label}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        className="link-btn"
+                        disabled={
+                          listening ||
+                          batchBusy ||
+                          recoverBusy ||
+                          job.status === "FAILED"
+                        }
+                        onClick={() => void importRecoverableJob(job.jobName)}
+                      >
+                        {job.status === "FAILED" ? "불러올 수 없음" : "가져오기"}
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          ) : null}
 
           <div className="meeting-speaker-row" role="group" aria-label="화자 선택">
             <span className="meeting-speaker-label">화자</span>

@@ -31,10 +31,12 @@ def _lambda():
     global _client
     if _client is None:
         region = str(utils.load_config().get("region") or "us-west-2")
+        # Batch-job COMPLETED responses include full speaker-labeled transcripts
+        # for long meetings; allow the Lambda's 60s ceiling to finish.
         _client = boto3.client(
             "lambda",
             region_name=region,
-            config=Config(read_timeout=35, retries={"max_attempts": 2}),
+            config=Config(read_timeout=70, retries={"max_attempts": 2}),
         )
     return _client
 
@@ -86,6 +88,16 @@ def upload_url(request: Request, size: int = Query(..., ge=1)) -> dict:
 @router.post("/batch-transcribe")
 def batch_transcribe(request: Request, body: BatchBody) -> dict:
     return _invoke("POST", "/batch-transcribe", require_user_id(request), body={"key": body.key})
+
+
+@router.get("/batch-jobs")
+def batch_jobs(request: Request, limit: int = Query(20, ge=1, le=50)) -> dict:
+    return _invoke(
+        "GET",
+        "/batch-jobs",
+        require_user_id(request),
+        query={"limit": str(limit)},
+    )
 
 
 @router.get("/batch-job/{job_name}")

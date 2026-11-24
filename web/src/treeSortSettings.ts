@@ -1,4 +1,4 @@
-const TREE_SORT_KEY = "ob-note:tree-sort";
+import { getPrefs, patchPrefs } from "./uiPrefs";
 
 /** File-manager style sort modes for the vault sidebar. */
 export type TreeSortMode = "name" | "created" | "modified";
@@ -11,26 +11,12 @@ export const TREE_SORT_OPTIONS = [
 
 export type TreeSortOption = (typeof TREE_SORT_OPTIONS)[number];
 
-const DEFAULT_MODE: TreeSortMode = "modified";
-
 export function getTreeSortMode(): TreeSortMode {
-  try {
-    const stored = localStorage.getItem(TREE_SORT_KEY);
-    if (stored === "name" || stored === "created" || stored === "modified") {
-      return stored;
-    }
-  } catch {
-    /* ignore */
-  }
-  return DEFAULT_MODE;
+  return getPrefs().treeSort;
 }
 
 export function setTreeSortMode(mode: TreeSortMode): void {
-  try {
-    localStorage.setItem(TREE_SORT_KEY, mode);
-  } catch {
-    /* ignore */
-  }
+  patchPrefs({ treeSort: mode });
 }
 
 export function treeSortModeToLabel(mode: TreeSortMode): TreeSortOption {

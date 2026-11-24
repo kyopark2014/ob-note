@@ -1,26 +1,12 @@
-const OPEN_FOLDERS_KEY = "ob-note:open-folders";
+import { getPrefs, patchPrefs } from "./uiPrefs";
 
 export function getOpenFolders(): Set<string> {
-  try {
-    const raw = localStorage.getItem(OPEN_FOLDERS_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(
-      parsed.filter((p): p is string => typeof p === "string" && p.length > 0),
-    );
-  } catch {
-    return new Set();
-  }
+  return new Set(getPrefs().openFolders);
 }
 
 export function setOpenFolders(paths: Set<string> | string[]): void {
-  try {
-    const list = Array.isArray(paths) ? paths : Array.from(paths);
-    localStorage.setItem(OPEN_FOLDERS_KEY, JSON.stringify(list));
-  } catch {
-    /* ignore */
-  }
+  const list = Array.isArray(paths) ? paths : Array.from(paths);
+  patchPrefs({ openFolders: list });
 }
 
 export function isFolderOpen(path: string): boolean {

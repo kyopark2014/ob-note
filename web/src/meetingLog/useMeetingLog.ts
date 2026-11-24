@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { encodeWav, floatTo16BitPcm, recordedSeconds } from "./audio";
 import {
+  BATCH_POLL_INTERVAL_MS,
+  BATCH_POLL_MAX_ATTEMPTS,
+  BATCH_POLL_MAX_MS,
   BATCH_STORAGE_KEY_LEGACY,
   DEFAULT_MEETING_TITLE,
   MEETING_LOG_CONFIG,
@@ -8,11 +11,19 @@ import {
   STORAGE_KEY_LEGACY,
   meetingBatchStorageKey,
   meetingEntriesStorageKey,
+  meetingPendingJobStorageKey,
   type SpeakerId,
 } from "./config";
 import { decodeEventStream, encodeAudioEvent } from "./eventstream";
 import { entriesToCopyText, meetingFileBaseName } from "./format";
-import type { BatchEntry, InterimState, MeetingEntry, MeetingView } from "./types";
+import type {
+  BatchEntry,
+  InterimState,
+  MeetingEntry,
+  MeetingView,
+  PendingBatchJob,
+  RecoverableBatchJob,
+} from "./types";
 
 type SpeakerGroup = { speaker: string; text: string; start: number };
 
@@ -55,6 +66,10 @@ export function useMeetingLog(userId: string | null) {
   const [title, setTitle] = useState(DEFAULT_MEETING_TITLE);
   /** Only persist after this user's storage has been loaded (avoids cross-user overwrite). */
   const [hydratedUserId, setHydratedUserId] = useState<string | null>(null);
+  const [pendingJob, setPendingJob] = useState<PendingBatchJob | null>(null);
+  const [recoverJobs, setRecoverJobs] = useState<RecoverableBatchJob[]>([]);
+  const [recoverOpen, setRecoverOpen] = useState(false);
+  const [recoverBusy, setRecoverBusy] = useState(false);
 
   const wantListenRef = useRef(false);
   const listeningRef = useRef(false);
@@ -144,6 +159,10 @@ export function useMeetingLog(userId: string | null) {
       setPinnedSpeaker("A");
       setCanSaveVault(false);
       setSavingVault(false);
+      setPendingJob(null);
+      setRecoverJobs([]);
+      setRecoverOpen(false);
+      setRecoverBusy(false);
       const now = new Date();
       setRecordedAt(now);
       recordedAtRef.current = now;
@@ -160,10 +179,21 @@ export function useMeetingLog(userId: string | null) {
 
     const nextEntries = loadJson<MeetingEntry[]>(meetingEntriesStorageKey(userId), []);
     const nextBatch = loadJson<BatchEntry[]>(meetingBatchStorageKey(userId), []);
+    const nextPending = loadJson<PendingBatchJob | null>(
+      meetingPendingJobStorageKey(userId),
+      null,
+    );
     setEntries(Array.isArray(nextEntries) ? nextEntries : []);
     setBatchEntries(Array.isArray(nextBatch) ? nextBatch : []);
+    setPendingJob(
+      nextPending && typeof nextPending.jobName === "string" ? nextPending : null,
+    );
     setView("live");
-    setStatus("마이크를 눌러 기록을 시작하세요.");
+    setStatus(
+      nextPending?.jobName
+        ? "이전에 진행 중이던 배치 변환이 있습니다. '변환 결과 불러오기'로 확인할 수 있습니다."
+        : "마이크를 눌러 기록을 시작하세요.",
+    );
     setBatchBusy(false);
     setHasRecordedAudio(false);
     setAutoSpeaker(true);
@@ -173,6 +203,9 @@ export function useMeetingLog(userId: string | null) {
         (Array.isArray(nextEntries) && nextEntries.length > 0),
     );
     setSavingVault(false);
+    setRecoverJobs([]);
+    setRecoverOpen(false);
+    setRecoverBusy(false);
     const now = new Date();
     setRecordedAt(now);
     recordedAtRef.current = now;
@@ -195,6 +228,104 @@ export function useMeetingLog(userId: string | null) {
     if (!userId || hydratedUserId !== userId) return;
     localStorage.setItem(meetingBatchStorageKey(userId), JSON.stringify(batchEntries));
   }, [batchEntries, userId, hydratedUserId]);
+
+  useEffect(() => {
+    if (!userId || hydratedUserId !== userId) return;
+    const key = meetingPendingJobStorageKey(userId);
+    if (pendingJob?.jobName) {
+      localStorage.setItem(key, JSON.stringify(pendingJob));
+    } else {
+      localStorage.removeItem(key);
+    }
+  }, [pendingJob, userId, hydratedUserId]);
+
+  const persistPendingJob = useCallback((job: PendingBatchJob | null) => {
+    setPendingJob(job);
+  }, []);
+
+  const applyCompletedBatch = useCallback(
+    (
+      result: { entries?: BatchEntry[] },
+      segmentOffset: number,
+      opts?: { replace?: boolean },
+    ) => {
+      const replace = opts?.replace === true;
+      const segmentEntries = (Array.isArray(result.entries) ? result.entries : []).map(
+        (entry) => ({
+          ...entry,
+          start:
+            entry.start != null && Number.isFinite(entry.start)
+              ? segmentOffset + Number(entry.start)
+              : segmentOffset,
+        }),
+      );
+      setBatchEntries((prev) =>
+        replace ? segmentEntries : [...prev, ...segmentEntries],
+      );
+      setView("batch");
+      setCanSaveVault(true);
+      persistPendingJob(null);
+      const added = segmentEntries.filter((entry) => String(entry.text || "").trim())
+        .length;
+      setStatus(
+        added
+          ? `배치 변환이 끝났습니다. ${added}개 구간을 추가했습니다. 보내기로 노트에 저장하세요.`
+          : "배치 변환이 끝났습니다. 추가된 텍스트가 없습니다.",
+      );
+      return added;
+    },
+    [persistPendingJob],
+  );
+
+  const pollBatchJobUntilDone = useCallback(
+    async (jobName: string, segmentOffset: number) => {
+      const { apiBatchJobUrl } = MEETING_LOG_CONFIG;
+      const jobUrl = `${apiBatchJobUrl.replace(/\/$/, "")}/${encodeURIComponent(jobName)}`;
+      let result: {
+        jobName?: string;
+        status?: string;
+        detail?: string;
+        error?: string;
+        entries?: BatchEntry[];
+      } = { jobName, status: "IN_PROGRESS" };
+
+      for (let i = 0; i < BATCH_POLL_MAX_ATTEMPTS; i += 1) {
+        const elapsedMin = ((i * BATCH_POLL_INTERVAL_MS) / 60000).toFixed(1);
+        setStatus(
+          `회의 내용 정리 중… (${i + 1}/${BATCH_POLL_MAX_ATTEMPTS}, ${elapsedMin}분)`,
+        );
+        const poll = await fetch(jobUrl, { cache: "no-store", credentials: "same-origin" });
+        result = (await poll.json().catch(() => ({}))) as typeof result;
+        if (!poll.ok && !result.status) {
+          throw new Error(
+            result.detail || result.error || `작업 조회 실패 (HTTP ${poll.status})`,
+          );
+        }
+        if (result.status === "COMPLETED") {
+          applyCompletedBatch(result, segmentOffset);
+          pcmChunksRef.current = [];
+          setHasRecordedAudio(false);
+          return result;
+        }
+        if (result.status === "FAILED") {
+          persistPendingJob(null);
+          throw new Error(result.error || "배치 변환이 실패했습니다.");
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, BATCH_POLL_INTERVAL_MS));
+      }
+
+      // Keep pending so the user can resume via recover UX.
+      persistPendingJob({
+        jobName,
+        segmentOffset,
+        startedAt: Date.now() - BATCH_POLL_MAX_MS,
+      });
+      throw new Error(
+        "배치 변환이 15분 안에 끝나지 않았습니다. '변환 결과 불러오기'로 이어서 확인할 수 있습니다.",
+      );
+    },
+    [applyCompletedBatch, persistPendingJob],
+  );
 
   const mapSpeakerLabel = useCallback((raw: unknown): string => {
     if (!autoSpeakerRef.current) return pinnedSpeakerRef.current;
@@ -424,7 +555,7 @@ export function useMeetingLog(userId: string | null) {
       return;
     }
 
-    const { apiUploadUrl, apiBatchUrl, apiBatchJobUrl } = MEETING_LOG_CONFIG;
+    const { apiUploadUrl, apiBatchUrl } = MEETING_LOG_CONFIG;
     if (!userId) {
       setStatus("로그인 후 전체 변환할 수 있습니다.");
       return;
@@ -470,54 +601,18 @@ export function useMeetingLog(userId: string | null) {
         detail?: string;
         error?: string;
         status?: string;
-        entries?: BatchEntry[];
       };
       if (!startedRes.ok || !started.jobName) {
         throw new Error(started.detail || started.error || "작업을 시작하지 못했습니다.");
       }
 
-      const jobUrl = `${apiBatchJobUrl.replace(/\/$/, "")}/${encodeURIComponent(started.jobName)}`;
-      let result = started;
-      for (let i = 0; i < 60; i += 1) {
-        setStatus(`회의 내용 정리 중… (${i + 1}회 확인)`);
-        const poll = await fetch(jobUrl, { cache: "no-store", credentials: "same-origin" });
-        result = (await poll.json().catch(() => ({}))) as typeof started;
-        if (!poll.ok && !result.status) {
-          throw new Error(
-            result.detail || result.error || `작업 조회 실패 (HTTP ${poll.status})`,
-          );
-        }
-        if (result.status === "COMPLETED") break;
-        if (result.status === "FAILED") {
-          throw new Error(result.error || "배치 변환이 실패했습니다.");
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 3000));
-      }
-      if (result.status !== "COMPLETED") {
-        throw new Error("배치 변환이 시간 안에 끝나지 않았습니다. 잠시 후 다시 시도하세요.");
-      }
-
-      const segmentEntries = (Array.isArray(result.entries) ? result.entries : []).map(
-        (entry) => ({
-          ...entry,
-          start:
-            entry.start != null && Number.isFinite(entry.start)
-              ? segmentOffset + Number(entry.start)
-              : segmentOffset,
-        }),
-      );
-      // Append this segment's text; do not replace earlier segments.
-      setBatchEntries((prev) => [...prev, ...segmentEntries]);
-      pcmChunksRef.current = [];
-      setHasRecordedAudio(false);
-      setView("batch");
-      setCanSaveVault(true);
-      const added = segmentEntries.filter((entry) => String(entry.text || "").trim()).length;
-      setStatus(
-        added
-          ? `배치 변환이 끝났습니다. ${added}개 구간을 추가했습니다. 보내기로 노트에 저장하세요.`
-          : "배치 변환이 끝났습니다. 추가된 텍스트가 없습니다.",
-      );
+      persistPendingJob({
+        jobName: started.jobName,
+        segmentOffset,
+        startedAt: Date.now(),
+        key: signed.key,
+      });
+      await pollBatchJobUntilDone(started.jobName, segmentOffset);
     } catch (err) {
       console.error(err);
       const raw = String(err instanceof Error ? err.message : err || "");
@@ -529,7 +624,112 @@ export function useMeetingLog(userId: string | null) {
     } finally {
       setBatchBusy(false);
     }
+  }, [persistPendingJob, pollBatchJobUntilDone, userId]);
+
+  const resumePendingJob = useCallback(async () => {
+    if (!pendingJob?.jobName || batchBusyRef.current || recoverBusy) return;
+    setBatchBusy(true);
+    try {
+      await pollBatchJobUntilDone(pendingJob.jobName, pendingJob.segmentOffset || 0);
+    } catch (err) {
+      console.error(err);
+      const raw = String(err instanceof Error ? err.message : err || "");
+      setStatus(raw || "대기 중이던 변환을 불러오지 못했습니다.");
+    } finally {
+      setBatchBusy(false);
+    }
+  }, [pendingJob, pollBatchJobUntilDone, recoverBusy]);
+
+  const loadRecoverableJobs = useCallback(async () => {
+    if (!userId) {
+      setStatus("로그인 후 이전 변환을 불러올 수 있습니다.");
+      return;
+    }
+    setRecoverBusy(true);
+    try {
+      const url = `${MEETING_LOG_CONFIG.apiBatchJobsUrl}?limit=20`;
+      const res = await fetch(url, { cache: "no-store", credentials: "same-origin" });
+      const data = (await res.json().catch(() => ({}))) as {
+        jobs?: RecoverableBatchJob[];
+        detail?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || `목록 조회 실패 (HTTP ${res.status})`);
+      }
+      const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+      setRecoverJobs(jobs);
+      setRecoverOpen(true);
+      setStatus(
+        jobs.length
+          ? `이전 변환 ${jobs.length}건을 불러왔습니다.`
+          : "불러올 이전 변환이 없습니다.",
+      );
+    } catch (err) {
+      console.error(err);
+      const raw = String(err instanceof Error ? err.message : err || "");
+      setStatus(raw || "이전 변환 목록을 가져오지 못했습니다.");
+    } finally {
+      setRecoverBusy(false);
+    }
   }, [userId]);
+
+  const importRecoverableJob = useCallback(
+    async (jobName: string, opts?: { replace?: boolean }) => {
+      if (!jobName || batchBusyRef.current || recoverBusy) return;
+      setRecoverBusy(true);
+      setBatchBusy(true);
+      try {
+        const jobUrl = `${MEETING_LOG_CONFIG.apiBatchJobUrl.replace(/\/$/, "")}/${encodeURIComponent(jobName)}`;
+        const res = await fetch(jobUrl, { cache: "no-store", credentials: "same-origin" });
+        const result = (await res.json().catch(() => ({}))) as {
+          status?: string;
+          detail?: string;
+          error?: string;
+          entries?: BatchEntry[];
+          createdAt?: string;
+        };
+        if (!res.ok && !result.status) {
+          throw new Error(
+            result.detail || result.error || `작업 조회 실패 (HTTP ${res.status})`,
+          );
+        }
+        if (result.status === "IN_PROGRESS" || result.status === "QUEUED") {
+          persistPendingJob({
+            jobName,
+            segmentOffset: 0,
+            startedAt: Date.now(),
+          });
+          setStatus("아직 변환 중입니다. 이어서 확인합니다…");
+          await pollBatchJobUntilDone(jobName, 0);
+          return;
+        }
+        if (result.status === "FAILED") {
+          throw new Error(result.error || "해당 변환 작업이 실패했습니다.");
+        }
+        if (result.status !== "COMPLETED") {
+          throw new Error(`알 수 없는 작업 상태: ${result.status || "UNKNOWN"}`);
+        }
+        if (result.createdAt) {
+          const created = new Date(result.createdAt);
+          if (!Number.isNaN(created.getTime())) {
+            setRecordedAt(created);
+            recordedAtRef.current = created;
+          }
+        }
+        applyCompletedBatch(result, 0, { replace: opts?.replace === true });
+        setRecoverOpen(false);
+      } catch (err) {
+        console.error(err);
+        const raw = String(err instanceof Error ? err.message : err || "");
+        setStatus(raw || "변환 결과를 가져오지 못했습니다.");
+      } finally {
+        setRecoverBusy(false);
+        setBatchBusy(false);
+      }
+    },
+    [applyCompletedBatch, persistPendingJob, pollBatchJobUntilDone, recoverBusy],
+  );
 
   const releaseWakeLock = useCallback(async () => {
     const lock = wakeLockRef.current;
@@ -749,12 +949,15 @@ export function useMeetingLog(userId: string | null) {
   }, []);
 
   const clearLog = useCallback(() => {
-    if (!entriesRef.current.length && !batchEntries.length) {
+    if (!entriesRef.current.length && !batchEntries.length && !pendingJob) {
       setStatus("지울 기록이 없습니다.");
       return false;
     }
     setEntries([]);
     setBatchEntries([]);
+    persistPendingJob(null);
+    setRecoverJobs([]);
+    setRecoverOpen(false);
     seenFinalIdsRef.current.clear();
     pcmChunksRef.current = [];
     allPcmChunksRef.current = [];
@@ -767,7 +970,7 @@ export function useMeetingLog(userId: string | null) {
     setTitle(DEFAULT_MEETING_TITLE);
     setStatus("기록을 지웠습니다. 마이크를 눌러 다시 시작하세요.");
     return true;
-  }, [batchEntries.length]);
+  }, [batchEntries.length, pendingJob, persistPendingJob]);
 
   /** Download the full meeting recording (all segments) as a WAV file. */
   const downloadAudio = useCallback(() => {
@@ -854,9 +1057,17 @@ export function useMeetingLog(userId: string | null) {
     title,
     setTitle,
     batchReady,
+    pendingJob,
+    recoverJobs,
+    recoverOpen,
+    setRecoverOpen,
+    recoverBusy,
     toggleListening,
     stopListening,
     runBatchTranscribe,
+    resumePendingJob,
+    loadRecoverableJobs,
+    importRecoverableJob,
     cycleSpeaker,
     selectSpeakerMode,
     clearLog,

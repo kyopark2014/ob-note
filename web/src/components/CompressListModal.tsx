@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, type CompressListItem } from "../api";
+import {
+  rememberSkipConfirm,
+  shouldSkipConfirm,
+} from "../uiPrefs";
 import { ConfirmDialog, type ConfirmOptions } from "./ConfirmDialog";
 
 type Props = {
@@ -8,24 +12,6 @@ type Props = {
   onClose: () => void;
   onStart: () => void;
 };
-
-const SKIP_CONFIRM_PREFIX = "ob-note:skip-confirm:";
-
-function shouldSkipConfirm(key: string): boolean {
-  try {
-    return localStorage.getItem(`${SKIP_CONFIRM_PREFIX}${key}`) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function setSkipConfirm(key: string): void {
-  try {
-    localStorage.setItem(`${SKIP_CONFIRM_PREFIX}${key}`, "1");
-  } catch {
-    /* ignore */
-  }
-}
 
 function formatWhen(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value) || value <= 0) return "—";
@@ -289,7 +275,7 @@ export function CompressListModal({ open, onClose, onStart }: Props) {
         options={confirmState?.options ?? null}
         onConfirm={(dontAskAgain) => {
           const key = confirmState?.options.dontAskAgainKey;
-          if (dontAskAgain && key) setSkipConfirm(key);
+          if (dontAskAgain && key) rememberSkipConfirm(key);
           confirmState?.resolve(true);
           setConfirmState(null);
         }}

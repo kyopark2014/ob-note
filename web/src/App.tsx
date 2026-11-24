@@ -122,6 +122,16 @@ import {
   getAgentWidth,
   setAgentWidth as persistAgentWidth,
 } from "./agentPanelSettings";
+import {
+  flushRemoteSave,
+  getPrefs,
+  patchPrefs,
+  rememberSkipConfirm,
+  setRemoteSyncEnabled,
+  shouldSkipConfirm,
+  syncPrefsWithServer,
+  type UiPrefs,
+} from "./uiPrefs";
 import { resolveWikiTarget, wikiLinkMarkdown } from "./wikiLink";
 import {
   getCachedNote,
@@ -228,24 +238,6 @@ function sortTreeNodes(nodes: TreeNode[], mode: TreeSortMode): TreeNode[] {
   );
 }
 
-const SKIP_CONFIRM_PREFIX = "ob-note:skip-confirm:";
-
-function shouldSkipConfirm(key: string): boolean {
-  try {
-    return localStorage.getItem(`${SKIP_CONFIRM_PREFIX}${key}`) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function rememberSkipConfirm(key: string): void {
-  try {
-    localStorage.setItem(`${SKIP_CONFIRM_PREFIX}${key}`, "1");
-  } catch {
-    /* ignore */
-  }
-}
-
 function noteTemplate(title: string): string {
   return `# ${title}\n\n`;
 }
@@ -337,7 +329,6 @@ function uniqueNotePath(parent: string, tree: TreeNode[]): string {
   return uniqueNamedPath(parent, "Untitled", tree);
 }
 
-const LAST_NOTE_KEY = "ob-note:last-note-path";
 /** Viewport width that switches Auto layout to the mobile overlay. Not a device check. */
 const NARROW_LAYOUT_MQ = "(max-width: 1024px)";
 
@@ -351,29 +342,18 @@ function flattenMarkdownPaths(nodes: TreeNode[]): string[] {
 }
 
 function readLastNotePath(): string | null {
-  try {
-    return localStorage.getItem(LAST_NOTE_KEY);
-  } catch {
-    return null;
-  }
+  return getPrefs().lastNotePath;
 }
 
 function writeLastNotePath(path: string): void {
-  try {
-    localStorage.setItem(LAST_NOTE_KEY, path);
-    ensureAncestorsOpen(path);
-  } catch {
-    /* ignore */
-  }
+  patchPrefs({ lastNotePath: path });
+  ensureAncestorsOpen(path);
 }
 
 function clearLastNotePath(path?: string): void {
-  try {
-    if (!path || localStorage.getItem(LAST_NOTE_KEY) === path) {
-      localStorage.removeItem(LAST_NOTE_KEY);
-    }
-  } catch {
-    /* ignore */
+  const cur = getPrefs().lastNotePath;
+  if (!path || cur === path) {
+    patchPrefs({ lastNotePath: null });
   }
 }
 
@@ -715,6 +695,7 @@ function uniqueImagePath(parent: string, ext: string, tree: TreeNode[]): string 
 
 export default function App() {
   const { theme, setTheme } = useTheme();
+  const [prefsEpoch, setPrefsEpoch] = useState(0);
   const [ready, setReady] = useState(false);
   const [authError, setAuthError] = useState<{ login_url?: string } | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
@@ -920,6 +901,29 @@ export default function App() {
     persistPinnedPaths(next);
   }, []);
 
+  const applyHydratedPrefs = useCallback(
+    (prefs: UiPrefs) => {
+      setTheme(prefs.theme);
+      setLayoutMode(prefs.layoutMode);
+      setShowImages(prefs.showImages);
+      setTreeSortMode(prefs.treeSort);
+      setSidebarWidth(prefs.sidebarWidth);
+      setRecentListOpen(prefs.recentListOpen);
+      setPinnedListOpen(prefs.pinnedListOpen);
+      setAgentModelState(prefs.agentModel);
+      setAgentWidth(prefs.agentWidth);
+      setPinnedPathsState(prefs.pinnedPaths);
+      setPrefsEpoch((n) => n + 1);
+    },
+    [setTheme],
+  );
+
+  const hydratePrefs = useCallback(async () => {
+    const prefs = await syncPrefsWithServer();
+    applyHydratedPrefs(prefs);
+    return prefs;
+  }, [applyHydratedPrefs]);
+
   const resolveLatestPath = useCallback((path: string): string => {
     let cur = path;
     const seen = new Set<string>();
@@ -1021,18 +1025,10 @@ export default function App() {
       return;
     }
     try {
-      const t = await api.getTree();
-      setTree(t.children);
+      await hydratePrefs();
     } catch {
-      setTree([]);
+      /* local cache already applied */
     }
-    setReady(true);
-  }, []);
-
-  const finishLogin = useCallback(async (user_id: string) => {
-    setUserId(user_id);
-    setAuthError(null);
-    setLoginError(null);
     try {
       const t = await api.getTree();
       setTree(t.children);
@@ -1040,7 +1036,25 @@ export default function App() {
       setTree([]);
     }
     setReady(true);
-  }, []);
+  }, [hydratePrefs]);
+
+  const finishLogin = useCallback(async (user_id: string) => {
+    setUserId(user_id);
+    setAuthError(null);
+    setLoginError(null);
+    try {
+      await hydratePrefs();
+    } catch {
+      /* local cache already applied */
+    }
+    try {
+      const t = await api.getTree();
+      setTree(t.children);
+    } catch {
+      setTree([]);
+    }
+    setReady(true);
+  }, [hydratePrefs]);
 
   const handleGoogleAccessToken = useCallback(
     async (accessToken: string) => {
@@ -1098,6 +1112,12 @@ export default function App() {
     setSharePermissionOpen(false);
     setGraphMenuOpen(false);
     setSharedListOpen(false);
+    try {
+      await flushRemoteSave();
+    } catch {
+      /* best-effort */
+    }
+    setRemoteSyncEnabled(false);
     try {
       await api.clearSession();
     } catch {
@@ -4146,6 +4166,7 @@ export default function App() {
                 <div className="section-label">Vaults</div>
               )}
               <FileTree
+                key={`vault-tree-${prefsEpoch}`}
                 nodes={visibleTree}
                 activePath={activePath}
                 selectedFolder={selectedFolder}

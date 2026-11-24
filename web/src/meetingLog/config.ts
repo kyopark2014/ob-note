@@ -6,6 +6,7 @@ export type MeetingLogConfig = {
   apiUploadUrl: string;
   apiBatchUrl: string;
   apiBatchJobUrl: string;
+  apiBatchJobsUrl: string;
 };
 
 // Same-origin, session-authenticated proxy (no public API Gateway).
@@ -18,7 +19,15 @@ export const MEETING_LOG_CONFIG: MeetingLogConfig = {
   apiUploadUrl: `${API}/upload-url`,
   apiBatchUrl: `${API}/batch-transcribe`,
   apiBatchJobUrl: `${API}/batch-job`,
+  apiBatchJobsUrl: `${API}/batch-jobs`,
 };
+
+/** Batch Transcribe poll window (long meetings often take 5–10+ minutes). */
+export const BATCH_POLL_INTERVAL_MS = 3000;
+export const BATCH_POLL_MAX_MS = 15 * 60 * 1000;
+export const BATCH_POLL_MAX_ATTEMPTS = Math.ceil(
+  BATCH_POLL_MAX_MS / BATCH_POLL_INTERVAL_MS,
+);
 
 export const TARGET_SAMPLE_RATE = 16000;
 export const SPEAKERS = ["A", "B", "C", "D", "E", "F"] as const;
@@ -37,4 +46,8 @@ export function meetingEntriesStorageKey(userId: string): string {
 
 export function meetingBatchStorageKey(userId: string): string {
   return `ob-note:meeting-log-batch-v1:${userId}`;
+}
+
+export function meetingPendingJobStorageKey(userId: string): string {
+  return `ob-note:meeting-log-pending-job-v1:${userId}`;
 }

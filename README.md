@@ -120,6 +120,7 @@ data/
 |---|---|---|
 | GET | `/api/health` | 헬스체크 |
 | GET | `/api/session` | 공유 세션 확인 |
+| GET/PUT | `/api/prefs` | 계정 UI prefs (핀·정렬·테마 등 → DynamoDB `META#ui`) |
 | GET | `/api/files/tree` | 파일 트리 |
 | GET | `/api/files/list?prefix=&ext=` | 플랫 파일 목록 |
 | GET | `/api/files/read?path=` | 노트 읽기 |

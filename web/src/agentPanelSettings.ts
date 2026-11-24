@@ -1,28 +1,15 @@
-const AGENT_W_KEY = "ob-note:agent-w";
+import { getPrefs, patchPrefs } from "./uiPrefs";
 
 export const AGENT_W_DEFAULT = 360;
 export const AGENT_W_MIN = 280;
 export const AGENT_W_MAX = 640;
 
 export function getAgentWidth(): number {
-  try {
-    const n = Number(localStorage.getItem(AGENT_W_KEY));
-    if (Number.isFinite(n) && n >= AGENT_W_MIN && n <= AGENT_W_MAX) {
-      return Math.round(n);
-    }
-  } catch {
-    /* ignore */
-  }
-  return AGENT_W_DEFAULT;
+  return getPrefs().agentWidth;
 }
 
 export function setAgentWidth(width: number): void {
-  const clamped = clampAgentWidth(width);
-  try {
-    localStorage.setItem(AGENT_W_KEY, String(clamped));
-  } catch {
-    /* ignore */
-  }
+  patchPrefs({ agentWidth: clampAgentWidth(width) });
 }
 
 export function clampAgentWidth(width: number): number {

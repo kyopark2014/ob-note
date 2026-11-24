@@ -14,6 +14,21 @@ export type BatchEntry = {
   start?: number;
 };
 
+export type PendingBatchJob = {
+  jobName: string;
+  segmentOffset: number;
+  startedAt: number;
+  key?: string;
+};
+
+export type RecoverableBatchJob = {
+  jobName: string;
+  status: string;
+  createdAt?: string | null;
+  completedAt?: string | null;
+  failureReason?: string | null;
+};
+
 export type MeetingView = "live" | "batch";
 
 export type InterimState = {

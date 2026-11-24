@@ -1,26 +1,21 @@
+import { getPrefs, patchPrefs } from "./uiPrefs";
+
 export type Theme = "light" | "dark";
 
+/** @deprecated Prefer getPrefs().theme — kept for callers that read the raw key. */
 export const THEME_STORAGE_KEY = "ob-note-theme";
 
 export function getStoredTheme(): Theme {
-  try {
-    const value = localStorage.getItem(THEME_STORAGE_KEY);
-    if (value === "light" || value === "dark") return value;
-  } catch {
-    /* ignore */
-  }
-  return "dark";
+  return getPrefs().theme;
 }
 
 export function applyTheme(theme: Theme) {
   document.documentElement.setAttribute("data-theme", theme);
-  try {
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-  } catch {
-    /* ignore */
-  }
+  if (getPrefs().theme === theme) return;
+  patchPrefs({ theme });
 }
 
 export function initTheme() {
-  applyTheme(getStoredTheme());
+  const theme = getStoredTheme();
+  document.documentElement.setAttribute("data-theme", theme);
 }

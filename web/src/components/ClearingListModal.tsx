@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, type ClearingDeleteStatus, type ClearingItem, type ClearingScan } from "../api";
+import {
+  rememberSkipConfirm,
+  shouldSkipConfirm,
+} from "../uiPrefs";
 import { ConfirmDialog, type ConfirmOptions } from "./ConfirmDialog";
 
 type DeleteActivity = {
@@ -18,24 +22,6 @@ type Props = {
   onDeleteActivity?: (info: DeleteActivity) => void;
   onDeleteBackground?: () => void;
 };
-
-const SKIP_CONFIRM_PREFIX = "ob-note:skip-confirm:";
-
-function shouldSkipConfirm(key: string): boolean {
-  try {
-    return localStorage.getItem(`${SKIP_CONFIRM_PREFIX}${key}`) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function setSkipConfirm(key: string): void {
-  try {
-    localStorage.setItem(`${SKIP_CONFIRM_PREFIX}${key}`, "1");
-  } catch {
-    /* ignore */
-  }
-}
 
 function formatSize(size: number): string {
   if (!Number.isFinite(size) || size < 0) return "—";
@@ -424,7 +410,7 @@ export function ClearingListModal({
         options={confirmState?.options ?? null}
         onConfirm={(dontAskAgain) => {
           const key = confirmState?.options.dontAskAgainKey;
-          if (dontAskAgain && key) setSkipConfirm(key);
+          if (dontAskAgain && key) rememberSkipConfirm(key);
           confirmState?.resolve(true);
           setConfirmState(null);
         }}

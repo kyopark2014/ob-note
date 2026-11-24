@@ -19,6 +19,7 @@ from application.api.routes_documents import router as documents_router
 from application.api.routes_files import router as files_router
 from application.api.routes_graph import router as graph_router
 from application.api.routes_meeting_log import router as meeting_log_router
+from application.api.routes_prefs import router as prefs_router
 from application.api.routes_search import router as search_router
 from application.api.routes_share import api_router as share_api_router
 from application.api.routes_share import public_router as share_public_router
@@ -127,6 +128,7 @@ app.add_middleware(VaultUserMiddleware)
 
 app.include_router(auth_router)
 app.include_router(files_router)
+app.include_router(prefs_router)
 app.include_router(agent_router)
 app.include_router(documents_router)
 app.include_router(share_api_router)

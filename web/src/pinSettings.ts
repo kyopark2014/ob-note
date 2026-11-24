@@ -1,23 +1,11 @@
-const PINNED_KEY = "ob-note:pinned-paths";
+import { getPrefs, patchPrefs } from "./uiPrefs";
 
 export function getPinnedPaths(): string[] {
-  try {
-    const raw = localStorage.getItem(PINNED_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((p): p is string => typeof p === "string" && p.length > 0);
-  } catch {
-    return [];
-  }
+  return getPrefs().pinnedPaths;
 }
 
 export function setPinnedPaths(paths: string[]): void {
-  try {
-    localStorage.setItem(PINNED_KEY, JSON.stringify(paths));
-  } catch {
-    /* ignore */
-  }
+  patchPrefs({ pinnedPaths: paths });
 }
 
 export function togglePinnedPath(path: string, current: string[]): string[] {

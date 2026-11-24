@@ -204,7 +204,30 @@ function formatApiError(detail: unknown, status: number): string {
   return `HTTP ${status}`;
 }
 
+export type UiPrefsPayload = {
+  pinnedPaths?: string[];
+  treeSort?: "name" | "created" | "modified";
+  theme?: "light" | "dark";
+  layoutMode?: "auto" | "desktop" | "mobile";
+  showImages?: boolean;
+  agentModel?: string;
+  lastNotePath?: string | null;
+  openFolders?: string[];
+  sidebarWidth?: number;
+  agentWidth?: number;
+  pinnedListOpen?: boolean;
+  recentListOpen?: boolean;
+  skipConfirm?: Record<string, boolean>;
+  updated_at?: string;
+};
+
 export const api = {
+  getPrefs: () => request<UiPrefsPayload>("/prefs"),
+  putPrefs: (prefs: UiPrefsPayload) =>
+    request<{ ok: boolean; prefs: UiPrefsPayload }>("/prefs", {
+      method: "PUT",
+      body: JSON.stringify(prefs),
+    }),
   getSession: () =>
     request<{ user_id: string; sharing_url: string; authenticated: boolean }>(
       "/session",
