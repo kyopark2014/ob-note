@@ -2173,14 +2173,10 @@ export default function App() {
         await api.uploadFile(vaultPath, file, fileName);
         chunks.push(`![[${fileName}]]`);
       }
-      if (!showImages) {
-        persistShowImages(true);
-        setShowImages(true);
-      }
       await refreshTree();
       return chunks.join("\n\n");
     },
-    [activePath, refreshTree, showImages],
+    [activePath, refreshTree],
   );
 
   const uploadPastedImage = useCallback(
@@ -2191,14 +2187,10 @@ export default function App() {
       const vaultPath = uniqueImagePath(parent, ext, treeRef.current);
       const fileName = vaultPath.split("/").pop() || `image.${ext}`;
       await api.uploadFile(vaultPath, file, fileName);
-      if (!showImages) {
-        persistShowImages(true);
-        setShowImages(true);
-      }
       await refreshTree();
       return `![image](${fileName})`;
     },
-    [activePath, refreshTree, showImages],
+    [activePath, refreshTree],
   );
 
   const onEditorPaste = useCallback(
@@ -2529,12 +2521,6 @@ export default function App() {
           }
         }
 
-        // Moving an image or video into the tree — keep Images view on so it stays visible.
-        if (isCompanionMediaFileName(fromPath) && !showImages) {
-          persistShowImages(true);
-          setShowImages(true);
-        }
-
         await refreshTree();
         // S3 / companion-image moves settle asynchronously; refresh again.
         if (
@@ -2553,7 +2539,7 @@ export default function App() {
         void showAlert(err instanceof Error ? err.message : String(err), "Move failed");
       }
     },
-    [activePath, file?.path, pinnedPaths, refreshTree, selectedFolder, showAlert, showImages, updatePinnedPaths],
+    [activePath, file?.path, pinnedPaths, refreshTree, selectedFolder, showAlert, updatePinnedPaths],
   );
 
   const reorderInFolder = useCallback(
@@ -2656,16 +2642,12 @@ export default function App() {
           ensureAncestorsOpen(vaultPath);
         }
         if (parent) setFolderOpen(parent, true);
-        if ((images.length || videos.length) && !showImages) {
-          persistShowImages(true);
-          setShowImages(true);
-        }
         await refreshTree();
       } catch (err) {
         void showAlert(err instanceof Error ? err.message : String(err), "Upload failed");
       }
     },
-    [refreshTree, showAlert, showImages],
+    [refreshTree, showAlert],
   );
 
   const pasteMarkdownIntoFolder = useCallback(
