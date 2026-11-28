@@ -307,7 +307,7 @@ Other app (SigV4)
 |------|------|
 | `vault_health` / `vault_tree` / `vault_list` / `vault_read` | 조회 |
 | `vault_search` / `vault_graph` / `vault_backlinks` | 전문 검색·위키링크 그래프 |
-| `vault_write` / `vault_append` / `vault_mkdir` / `vault_rename` / `vault_delete` | 쓰기 |
+| `vault_write` / `vault_append` / `vault_str_replace` / `vault_mkdir` / `vault_rename` / `vault_delete` | 쓰기 |
 | `vault_rebuild` | 그래프 재빌드 |
 
 **search-note**

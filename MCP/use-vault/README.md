@@ -29,6 +29,7 @@ SEP-2640 `io.modelcontextprotocol/skills` 확장을 선언합니다.
 | `vault_backlinks` | `GET /api/graph/backlinks` | 백링크 |
 | `vault_write` | `PUT /api/files/write` | 덮어쓰기 |
 | `vault_append` | `POST /api/files/append` | 이어쓰기 |
+| `vault_str_replace` | read → replace → write | 부분 치환 (`old_string`→`new_string`) |
 | `vault_mkdir` | `POST /api/files/mkdir` | 폴더 생성 |
 | `vault_rename` | `POST /api/files/rename` | 이름/경로 변경 |
 | `vault_delete` | `POST /api/files/delete` | 삭제 |

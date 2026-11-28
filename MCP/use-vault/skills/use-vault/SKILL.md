@@ -33,6 +33,7 @@ standalone **ob-note** vault의 마크다운 노트 규칙과 워크플로입니
 | `vault_backlinks` | 해당 노트를 가리키는 링크 |
 | `vault_write` | 덮어쓰기 저장 |
 | `vault_append` | 이어쓰기 |
+| `vault_str_replace` | 부분 치환 (old→new) |
 | `vault_mkdir` | 폴더 생성 |
 | `vault_rename` | 이동/이름변경 |
 | `vault_delete` | 파일·폴더 삭제 |
@@ -44,7 +45,7 @@ standalone **ob-note** vault의 마크다운 노트 규칙과 워크플로입니
 
 1. `curl`로 ad-hoc API를 새로 작성하지 마세요. MCP면 vault_* 도구, Open Agent면 VAULT_WRITE를 사용하세요.
 2. 경로는 vault 상대경로입니다. 예: `AI/Ontology.md`, `Meeting/Weekly-Sync.md`
-3. MCP에서 덮어쓰기 전에 `vault_read`로 확인하세요. 부분 추가는 `vault_append`를 우선하세요.
+3. MCP에서 쓰기 전에 `vault_read`로 확인하세요. **중간 수정**은 `vault_str_replace`(정확한 old→new), **끝 추가**는 `vault_append`, **전체 재작성**만 `vault_write`를 쓰세요.
 4. 도구 JSON에는 path와 함께 deep link `url`이 붙습니다. 사용자에게는 한국어로 요약하고,  
    **노트 path를 말할 때는 `[제목](url)` 마크다운 링크를 함께** 전달하세요.
 5. **노트 본문 형식**: YAML frontmatter를 **넣지 마세요**. `# 제목` 한 줄로 시작하고 바로 본문을 이어서 쓰세요.
@@ -152,9 +153,11 @@ vault_search(actor_id="…", query="온톨로지")
 vault_mkdir(actor_id="…", path="Meeting")
 vault_write(actor_id="…", path="Meeting/Sprint-Review.md", content="# Sprint Review\n\n본문")
 vault_append(actor_id="…", path="Agent/Runtime-Log.md", content="\n## Update\n- item\n")
+vault_str_replace(actor_id="…", path="Meeting/Sprint-Review.md", old_string="## 결론\n\n초안", new_string="## 결론\n\n확정안")
 ```
 
-쓰기 본문은 항상 `# 제목`으로 시작하세요 (frontmatter 금지). **루트 저장 금지**.
+쓰기 본문은 항상 `# 제목`으로 시작하세요 (frontmatter 금지). **루트 저장 금지**.  
+`vault_str_replace`의 `old_string`은 노트에 **정확히 한 번** 나와야 합니다(여러 곳이면 `replace_all=true` 또는 주변 문맥을 더 포함).
 
 ## Note deep links
 
@@ -184,7 +187,7 @@ https://vault.my-agentic-ai.click/?note=Cloud%2FAWS+Azure+GCP+%EA%B0%80%EA%B2%A9
 
 - `vault_list`/`vault_search` 결과는 path(+ `url`) 표로 정리하세요.
 - `vault_read`는 title·tags·backlinks를 함께 보여준 뒤 본문 요약을 하세요. 상단에 deep link를 넣으세요.
-- 쓰기 성공 시 path · `url` · `ok: true`를 짧게 확인하면 됩니다.
+- 쓰기 성공 시 path · `url` · `ok: true`를 짧게 확인하면 됩니다. `vault_str_replace`는 `replacements` 횟수도 함께 확인하세요.
 - 새 노트는 frontmatter 없이 `# 제목` + 본문만, **카테고리 폴더 경로**와 deep link를 사용자에게 알려 주세요.
 
 ## Troubleshooting
