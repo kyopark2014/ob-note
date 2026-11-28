@@ -1,7 +1,18 @@
 # use-vault MCP (Streamable HTTP)
 
 ob-note vault의 마크다운 노트를 조회·검색·생성·수정하는 MCP 서버입니다.  
-`skills/use-vault`와 동일한 vault HTTP API를 `VaultAgent` 인증으로 호출합니다.
+vault HTTP API를 `VaultAgent` 인증으로 호출합니다.
+
+## Skills over MCP
+
+SEP-2640 `io.modelcontextprotocol/skills` 확장을 선언합니다.
+
+- `skills/list` / `skills/get` → `skill://use-vault/SKILL.md`
+- 본문: [`skills/use-vault/SKILL.md`](skills/use-vault/SKILL.md) (단일 소스; Open Agent S3 업로드도 여기)
+- 구현: `vault_skills.py` (`Extension` + `MethodBinding`)
+
+클라이언트(agentic-work)는 연결 시 skill을 발견해 `get_skill_instructions`로 로드합니다.  
+설계 문서: `agentic-work/skills-over-mcp.md`.
 
 ## Tools
 

@@ -23,7 +23,8 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger("ob-note-harness")
 
 ROOT = Path(__file__).resolve().parent
-SKILLS_DIR = ROOT / "skills"
+# Single source: MCP Skills over MCP bundle (also uploaded for Open Agent harness).
+SKILLS_DIR = ROOT / "MCP" / "use-vault" / "skills"
 SKILLS_S3_PREFIX = "skills"
 USE_VAULT_SKILL = "use-vault"
 
@@ -98,7 +99,7 @@ def write_use_vault_skill_config(
     region: str = "us-west-2",
     project: str = "ob-note",
 ) -> Path:
-    """Write skills/use-vault/config.json (optional sidecar for local/scripts)."""
+    """Write MCP/use-vault/skills/use-vault/config.json (optional sidecar)."""
     skill_dir = SKILLS_DIR / USE_VAULT_SKILL
     skill_dir.mkdir(parents=True, exist_ok=True)
     url = (sharing_url or "").rstrip("/")
@@ -140,7 +141,7 @@ def upload_skills_to_s3(
     region: str = "us-west-2",
     project: str = "ob-note",
 ) -> int:
-    """Upload ob-note/skills/ to s3://{bucket}/skills/."""
+    """Upload MCP/use-vault/skills/ to s3://{bucket}/skills/."""
     bucket = (s3_bucket or "").strip()
     if not bucket:
         raise ValueError("s3_bucket is required to upload skills")

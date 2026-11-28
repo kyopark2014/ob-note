@@ -1,6 +1,6 @@
 """Streamable-HTTP MCP server for ob-note vault (use-vault).
 
-Exposes the same read/write surface as skills/use-vault via vault HTTP API.
+Exposes vault HTTP API tools and Skills over MCP (``skills/use-vault/SKILL.md``).
 Always pass actor_id (account login id / email) so requests are scoped to
 that user's vault.
 """
@@ -13,6 +13,7 @@ import sys
 import vault_client as vault
 from mcp.server.mcpserver import MCPServer
 from vault_apps import apps, with_urls
+from vault_skills import skills
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,9 +56,10 @@ try:
     mcp = MCPServer(
         name="use-vault",
         instructions=INSTRUCTIONS,
-        extensions=[apps],  # read tools with the interactive vault viewer (see vault_apps.py)
+        # Apps: interactive vault viewer. Skills: SEP-2640 skill://use-vault/...
+        extensions=[apps, skills],
     )
-    logger.info("MCP server initialized successfully")
+    logger.info("MCP server initialized successfully (apps + skills extensions)")
 except Exception as e:
     logger.info("Error: %s", e)
     raise

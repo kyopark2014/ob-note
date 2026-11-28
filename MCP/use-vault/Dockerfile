@@ -4,6 +4,7 @@ WORKDIR /app
 
 RUN pip install --upgrade boto3 botocore \
  && pip install "mcp>=2.1.1" \
+ && pip install "PyYAML>=6.0" \
  && pip install "aws-opentelemetry-distro>=0.10.0"
 
 ENV PYTHONPATH=/app
