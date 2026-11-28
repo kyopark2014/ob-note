@@ -7,6 +7,7 @@ that user's vault.
 
 from __future__ import annotations
 
+import base64
 import logging
 import sys
 
@@ -24,9 +25,10 @@ logger = logging.getLogger("use-vault-mcp")
 
 INSTRUCTIONS = """\
 You manage markdown notes in an ob-note vault (Obsidian-like).
-.md files are the source of truth. Each account has an isolated vault;
-always pass actor_id from the system prompt (account login id / email) —
-never a nickname or display name.
+.md files are the source of truth. Each account has an isolated vault.
+Default actor_id is kyopark2014@gmail.com (tools apply this when omitted or
+when a nickname without @ is passed). Prefer the real Google login email;
+never use a display name, OS username, or local-dev.
 
 Critical rules:
 1. Paths are vault-relative, e.g. Meeting/Weekly-Sync.md
@@ -50,7 +52,8 @@ Critical rules:
    title. Same-note sections use [heading](#anchor); references to other vault
    notes use [title](url) from tool results (not public /s/ shares).
 9. Note body language: formal Korean 합니다체 (not 한다체). No CloudFront
-   /artifacts URLs inside notes — use vault-relative image paths only.
+   /artifacts URLs inside notes — upload with vault_upload, then link
+   vault-relative image paths only (same folder as the note).
 """
 
 try:
@@ -66,11 +69,9 @@ except Exception as e:
     raise
 
 
-def _require_actor(actor_id: str) -> str:
-    value = (actor_id or "").strip()
-    if not value:
-        raise ValueError("actor_id is required (account login id / email)")
-    return value
+def _require_actor(actor_id: str = "") -> str:
+    # Empty or nickname (no @) → DEFAULT_ACTOR_ID (kyopark2014@gmail.com).
+    return vault.resolve_actor_id(actor_id)
 
 
 def _ok(payload) -> str:
@@ -84,15 +85,15 @@ def _err(exc: Exception) -> str:
 
 
 @mcp.tool()
-def vault_health(actor_id: str = "") -> str:
+def vault_health(actor_id: str = vault.DEFAULT_ACTOR_ID) -> str:
     """
     Check ob-note vault API health (GET /api/health).
 
-    actor_id: optional for health; pass account login id when available.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     return: JSON health payload
     """
     try:
-        uid = (actor_id or "").strip() or "local-dev"
+        uid = _require_actor(actor_id)
         logger.info("vault_health actor_id=%s", uid)
         return _ok(vault.api_request("GET", "/api/health", user_id=uid))
     except Exception as e:
@@ -100,11 +101,11 @@ def vault_health(actor_id: str = "") -> str:
 
 
 @mcp.tool()
-def vault_write(actor_id: str, path: str, content: str) -> str:
+def vault_write(path: str, content: str, actor_id: str = vault.DEFAULT_ACTOR_ID) -> str:
     """
     Create or overwrite a vault note (PUT /api/files/write).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative path under a topic folder, e.g. Meeting/Note.md
           (do not write to vault root).
     content: full markdown body. No YAML frontmatter; start with # Title.
@@ -136,16 +137,16 @@ def vault_write(actor_id: str, path: str, content: str) -> str:
 
 @mcp.tool()
 def vault_append(
-    actor_id: str,
     path: str,
     content: str,
+    actor_id: str = vault.DEFAULT_ACTOR_ID,
     create: bool = True,
     separator: str = "\n",
 ) -> str:
     """
     Append text to a vault note (POST /api/files/append).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative path.
     content: text to append.
     create: if true, create the file when missing (default true).
@@ -177,10 +178,10 @@ def vault_append(
 
 @mcp.tool()
 def vault_str_replace(
-    actor_id: str,
     path: str,
     old_string: str,
     new_string: str,
+    actor_id: str = vault.DEFAULT_ACTOR_ID,
     replace_all: bool = False,
 ) -> str:
     """
@@ -189,7 +190,7 @@ def vault_str_replace(
     Prefer this over vault_write when only a section/paragraph changes.
     For end-of-file additions use vault_append instead.
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative path, e.g. Meeting/Note.md
     old_string: exact substring to find (must be unique unless replace_all).
     new_string: replacement text (may be empty to delete the match).
@@ -262,11 +263,96 @@ def vault_str_replace(
 
 
 @mcp.tool()
-def vault_mkdir(actor_id: str, path: str) -> str:
+def vault_upload(
+    path: str,
+    actor_id: str = vault.DEFAULT_ACTOR_ID,
+    content_base64: str = "",
+    source_url: str = "",
+    content_type: str = "",
+    filename: str = "",
+) -> str:
+    """
+    Upload a binary file (image, pdf, …) into the vault (POST /api/files/upload).
+
+    Put images in the **same folder as the note**, then link with a relative
+    path in markdown: ``![alt](diagram.png)``. Do NOT leave CloudFront
+    ``/artifacts/*`` URLs in notes.
+
+    Provide exactly one of ``content_base64`` or ``source_url``.
+
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
+    path: vault-relative destination under a topic folder,
+          e.g. Meeting/diagram.png (not vault root).
+    content_base64: raw file bytes encoded as standard base64 (not a data: URL).
+    source_url: http(s) URL to fetch and upload (when bytes are not in-context).
+    content_type: optional MIME type (guessed from filename when omitted).
+    filename: optional multipart filename (defaults to path basename).
+    return: JSON upload result including path and deep-link url
+    """
+    try:
+        uid = _require_actor(actor_id)
+        path = vault.normalize_vault_path(path)
+        if "/" not in path:
+            raise ValueError(
+                "uploads must live under a topic folder "
+                "(e.g. Meeting/diagram.png), not vault root"
+            )
+
+        b64 = (content_base64 or "").strip()
+        url = (source_url or "").strip()
+        if b64 and url:
+            raise ValueError("provide only one of content_base64 or source_url")
+        if not b64 and not url:
+            raise ValueError("content_base64 or source_url is required")
+
+        ctype = (content_type or "").strip()
+        if b64:
+            # Allow accidental data-URL prefix from models.
+            if b64.startswith("data:") and "," in b64:
+                header, b64 = b64.split(",", 1)
+                if not ctype and ";base64" in header:
+                    mime = header[5:].split(";", 1)[0].strip()
+                    if mime:
+                        ctype = mime
+            try:
+                data = base64.b64decode(b64, validate=False)
+            except Exception as exc:
+                raise ValueError(f"invalid content_base64: {exc}") from exc
+        else:
+            data, fetched_ctype = vault.fetch_bytes(url)
+            if not ctype:
+                ctype = fetched_ctype
+
+        if not data:
+            raise ValueError("empty file")
+
+        name = (filename or "").strip() or path.rsplit("/", 1)[-1]
+        logger.info(
+            "vault_upload actor_id=%s path=%s bytes=%s via=%s",
+            uid,
+            path,
+            len(data),
+            "base64" if b64 else "url",
+        )
+        return _ok(
+            vault.api_upload(
+                path,
+                data,
+                filename=name,
+                content_type=ctype or None,
+                user_id=uid,
+            )
+        )
+    except Exception as e:
+        return _err(e)
+
+
+@mcp.tool()
+def vault_mkdir(path: str, actor_id: str = vault.DEFAULT_ACTOR_ID) -> str:
     """
     Create a folder in the vault (POST /api/files/mkdir).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative folder path, e.g. Meeting/projects
     return: JSON mkdir result
     """
@@ -287,11 +373,11 @@ def vault_mkdir(actor_id: str, path: str) -> str:
 
 
 @mcp.tool()
-def vault_rename(actor_id: str, from_path: str, to_path: str) -> str:
+def vault_rename(from_path: str, to_path: str, actor_id: str = vault.DEFAULT_ACTOR_ID) -> str:
     """
     Rename or move a vault file/folder (POST /api/files/rename).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     from_path: current vault-relative path.
     to_path: destination vault-relative path.
     return: JSON rename result
@@ -314,11 +400,11 @@ def vault_rename(actor_id: str, from_path: str, to_path: str) -> str:
 
 
 @mcp.tool()
-def vault_delete(actor_id: str, path: str) -> str:
+def vault_delete(path: str, actor_id: str = vault.DEFAULT_ACTOR_ID) -> str:
     """
     Delete a vault file or folder (POST /api/files/delete).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative path to delete.
     return: JSON delete result
     """
@@ -339,11 +425,11 @@ def vault_delete(actor_id: str, path: str) -> str:
 
 
 @mcp.tool()
-def vault_rebuild(actor_id: str) -> str:
+def vault_rebuild(actor_id: str = vault.DEFAULT_ACTOR_ID) -> str:
     """
     Rebuild the vault wiki-link graph index (POST /api/graph/rebuild).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     return: JSON rebuild / sync status
     """
     try:

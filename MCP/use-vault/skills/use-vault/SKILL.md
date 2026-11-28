@@ -11,6 +11,11 @@ standalone **ob-note** vault의 마크다운 노트 규칙과 워크플로입니
 계정(`actor_id` / email)마다 vault가 `{userId}/vault/…`로 분리됩니다.  
 노트 경로는 항상 **그 계정 vault 기준 상대경로**입니다 (예: `Meeting/Note.md` — path에 email을 넣지 마세요).
 
+**기본 `actor_id`**: MCP 도구는 `kyopark2014@gmail.com`을 기본값으로 씁니다.  
+생략하거나 `ksdyb`·`local-dev`처럼 `@` 없는 닉네임을 넣으면 서버가 이 기본값으로 바꿉니다.  
+다른 계정이 필요할 때만 실제 Google email을 넘기세요.  
+(`e2npark@gmail.com`, gateway 토큰 이메일, `local-dev`로 고르지 마세요.)
+
 - **MCP 클라이언트**(agentic-work 등): 아래 MCP Tools를 사용하세요.
 - **Open Agent (harness)**: MCP 도구 대신 [Open Agent — 노트 저장](#open-agent--노트-저장)의 `VAULT_WRITE` 마커를 사용하세요.
 
@@ -34,12 +39,14 @@ standalone **ob-note** vault의 마크다운 노트 규칙과 워크플로입니
 | `vault_write` | 덮어쓰기 저장 |
 | `vault_append` | 이어쓰기 |
 | `vault_str_replace` | 부분 치환 (old→new) |
+| `vault_upload` | 이미지·바이너리 업로드 (`content_base64` 또는 `source_url`) |
 | `vault_mkdir` | 폴더 생성 |
 | `vault_rename` | 이동/이름변경 |
 | `vault_delete` | 파일·폴더 삭제 |
 | `vault_rebuild` | 검색/그래프 인덱스 재생성 |
 
-모든 호출에 `actor_id="<계정 email>"`을 넣으세요.
+`actor_id`는 생략 가능합니다(기본 `kyopark2014@gmail.com`).  
+다른 계정이면 `actor_id="<email>"`을 넘기세요. 닉네임·OS 사용자명은 쓰지 마세요.
 
 ## Critical Rules
 
@@ -51,7 +58,7 @@ standalone **ob-note** vault의 마크다운 노트 규칙과 워크플로입니
 5. **노트 본문 형식**: YAML frontmatter를 **넣지 마세요**. `# 제목` 한 줄로 시작하고 바로 본문을 이어서 쓰세요.
 6. **새 노트는 vault 루트에 두지 마세요.** 주제 폴더 아래(`Category/Note.md`)에만 저장합니다.
 7. **결과는 가능한 하나의 마크다운에 모으세요.** 분량이 많으면 제목 아래 **목차(TOC)** 를 넣으세요.
-8. **이미지는 CloudFront/외부 URL을 그대로 넣지 마세요.** vault 상대경로(같은 폴더의 `filename.png`)만 사용하세요.
+8. **이미지는 CloudFront/외부 URL을 그대로 넣지 마세요.** `vault_upload`로 노트와 같은 폴더에 올린 뒤, vault 상대경로(`filename.png`)만 쓰세요. 업로드 API를 `vault_search`로 찾지 마세요.
 9. **한국어 문체(합니다체)**: vault에 쓰는 노트 본문은 항상 **합니다체(존댓말)** 로 작성하세요.
 
 ## Open Agent — 노트 저장
@@ -145,15 +152,16 @@ standalone **ob-note** vault의 마크다운 노트 규칙과 워크플로입니
 ## Quick Start (MCP)
 
 ```text
-vault_health(actor_id="…")
-vault_list(actor_id="…")
-vault_tree(actor_id="…")
-vault_read(actor_id="…", path="Productivity/Convention.md")
-vault_search(actor_id="…", query="온톨로지")
-vault_mkdir(actor_id="…", path="Meeting")
-vault_write(actor_id="…", path="Meeting/Sprint-Review.md", content="# Sprint Review\n\n본문")
-vault_append(actor_id="…", path="Agent/Runtime-Log.md", content="\n## Update\n- item\n")
-vault_str_replace(actor_id="…", path="Meeting/Sprint-Review.md", old_string="## 결론\n\n초안", new_string="## 결론\n\n확정안")
+vault_health(actor_id="kyopark2014@gmail.com")
+vault_list(actor_id="kyopark2014@gmail.com")
+vault_tree(actor_id="kyopark2014@gmail.com")
+vault_read(actor_id="kyopark2014@gmail.com", path="Productivity/Convention.md")
+vault_search(actor_id="kyopark2014@gmail.com", query="온톨로지")
+vault_mkdir(actor_id="kyopark2014@gmail.com", path="Meeting")
+vault_write(actor_id="kyopark2014@gmail.com", path="Meeting/Sprint-Review.md", content="# Sprint Review\n\n본문")
+vault_append(actor_id="kyopark2014@gmail.com", path="Agent/Runtime-Log.md", content="\n## Update\n- item\n")
+vault_str_replace(actor_id="kyopark2014@gmail.com", path="Meeting/Sprint-Review.md", old_string="## 결론\n\n초안", new_string="## 결론\n\n확정안")
+vault_upload(actor_id="kyopark2014@gmail.com", path="Meeting/diagram.png", content_base64="…")
 ```
 
 쓰기 본문은 항상 `# 제목`으로 시작하세요 (frontmatter 금지). **루트 저장 금지**.  
@@ -174,27 +182,41 @@ https://vault.my-agentic-ai.click/?note=Cloud%2FAWS+Azure+GCP+%EA%B0%80%EA%B2%A9
 ## Images
 
 마크다운에 `![alt](https://…cloudfront…/artifacts/…)` 를 넣으면 vault에서 **403**이 납니다.  
-문서 저장 시 이미지를 **노트와 같은 폴더**에 두고 상대경로로 링크하세요.
+이미지를 **노트와 같은 폴더**에 `vault_upload`로 올린 뒤 상대경로로 링크하세요.
+
+```text
+vault_upload(
+  actor_id="kyopark2014@gmail.com",
+  path="Meeting/dxf_analysis.png",
+  content_base64="<base64 bytes>",   # 또는 source_url="https://…"
+)
+```
+
+노트 본문:
 
 ```markdown
 ![DXF 엔티티 분석](dxf_analysis.png)
 ![2D 도면](dxf_2d_drawing.png)
 ```
 
-**금지**: vault 노트에 CloudFront `/artifacts/*` URL을 그대로 남기기.
+- `path`는 주제 폴더 아래 (예: `Meeting/img.png`). vault 루트 금지.
+- `content_base64`와 `source_url` 중 **하나만** 전달하세요.
+- **금지**: vault 노트에 CloudFront `/artifacts/*` URL을 그대로 남기기.
+- **금지**: 이미지 업로드 방법을 `vault_search`로 검색하기 — MCP 도구 `vault_upload`를 쓰세요.
 
 ## Response tips
 
 - `vault_list`/`vault_search` 결과는 path(+ `url`) 표로 정리하세요.
 - `vault_read`는 title·tags·backlinks를 함께 보여준 뒤 본문 요약을 하세요. 상단에 deep link를 넣으세요.
-- 쓰기 성공 시 path · `url` · `ok: true`를 짧게 확인하면 됩니다. `vault_str_replace`는 `replacements` 횟수도 함께 확인하세요.
+- 쓰기 성공 시 path · `url` · `ok: true`를 짧게 확인하면 됩니다. `vault_str_replace`는 `replacements` 횟수도 함께 확인하세요. `vault_upload`는 path·size를 확인한 뒤 노트에는 상대경로만 넣으세요.
 - 새 노트는 frontmatter 없이 `# 제목` + 본문만, **카테고리 폴더 경로**와 deep link를 사용자에게 알려 주세요.
 
 ## Troubleshooting
 
 ### 빈 tree / File not found
 
-`actor_id`가 실제 Google email인지 확인하세요. 노트는 `vault/{email}/…` 아래에만 있습니다.
+`actor_id`가 실제 Google email인지 확인하세요. 기본은 `kyopark2014@gmail.com`입니다.  
+닉네임은 MCP가 기본 email로 치환합니다. 노트는 `vault/{email}/…` 아래에만 있습니다.
 
 ### 도구 오류 / auth
 

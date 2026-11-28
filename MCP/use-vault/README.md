@@ -16,7 +16,9 @@ SEP-2640 `io.modelcontextprotocol/skills` 확장을 선언합니다.
 
 ## Tools
 
-모든 도구에 **`actor_id`**(계정 로그인 ID / email)가 필요합니다. system prompt의 계정 ID를 그대로 넘기세요.
+모든 도구에 **`actor_id`**(Google 로그인 email)를 넘길 수 있습니다.  
+기본값은 `kyopark2014@gmail.com`이며, 생략하거나 `@` 없는 닉네임(`ksdyb`, `local-dev` 등)이면 서버가 기본값으로 치환합니다.  
+환경변수 `USE_VAULT_DEFAULT_ACTOR_ID`로 오버라이드할 수 있습니다.
 
 | Tool | API | 설명 |
 |------|-----|------|
@@ -30,6 +32,7 @@ SEP-2640 `io.modelcontextprotocol/skills` 확장을 선언합니다.
 | `vault_write` | `PUT /api/files/write` | 덮어쓰기 |
 | `vault_append` | `POST /api/files/append` | 이어쓰기 |
 | `vault_str_replace` | read → replace → write | 부분 치환 (`old_string`→`new_string`) |
+| `vault_upload` | `POST /api/files/upload` | 이미지·바이너리 (`content_base64` 또는 `source_url`) |
 | `vault_mkdir` | `POST /api/files/mkdir` | 폴더 생성 |
 | `vault_rename` | `POST /api/files/rename` | 이름/경로 변경 |
 | `vault_delete` | `POST /api/files/delete` | 삭제 |

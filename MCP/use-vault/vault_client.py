@@ -14,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -21,6 +22,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger("use-vault-mcp")
 
 COOKIE_NAME = "agent_user_id"
 COOKIE_VERSION = "v1"
@@ -147,6 +150,38 @@ def vault_base_url() -> str:
     return "http://127.0.0.1:8502"
 
 
+# Default vault owner for MCP tools when actor_id is omitted or a nickname.
+# Override with USE_VAULT_DEFAULT_ACTOR_ID (AgentCore env) if needed.
+DEFAULT_ACTOR_ID = (
+    (
+        os.environ.get("USE_VAULT_DEFAULT_ACTOR_ID")
+        or os.environ.get("DEFAULT_ACTOR_ID")
+        or ""
+    ).strip()
+    or "kyopark2014@gmail.com"
+)
+
+
+def resolve_actor_id(actor_id: Optional[str] = None) -> str:
+    """Resolve MCP ``actor_id`` to a vault account email.
+
+    - Empty / omitted → ``DEFAULT_ACTOR_ID``
+    - Nickname / non-email (no ``@``) → ``DEFAULT_ACTOR_ID`` (with warning)
+    - Real email → as given
+    """
+    value = (actor_id or "").strip()
+    if not value:
+        return DEFAULT_ACTOR_ID
+    if "@" not in value:
+        logger.warning(
+            "actor_id %r is not an email; using default %s",
+            value,
+            DEFAULT_ACTOR_ID,
+        )
+        return DEFAULT_ACTOR_ID
+    return value
+
+
 def resolve_user_id(cli_user_id: Optional[str] = None) -> str:
     for candidate in (
         cli_user_id,
@@ -158,7 +193,7 @@ def resolve_user_id(cli_user_id: Optional[str] = None) -> str:
         value = (candidate or "").strip()
         if value:
             return value
-    return "local-dev"
+    return DEFAULT_ACTOR_ID
 
 
 def normalize_vault_path(path: str) -> str:
@@ -389,6 +424,107 @@ def api_request_bytes(
         raise RuntimeError(f"HTTP {exc.code} {method.upper()} {path}: {parsed}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Failed to reach ob-note at {base}: {exc}") from exc
+
+
+def fetch_bytes(
+    url: str,
+    *,
+    timeout: float = 60.0,
+    max_bytes: int = 15 * 1024 * 1024,
+) -> tuple[bytes, str]:
+    """Download bytes from an http(s) URL. Returns ``(body, content_type)``."""
+    cleaned = (url or "").strip()
+    if not cleaned:
+        raise ValueError("source_url is required")
+    parsed = urllib.parse.urlparse(cleaned)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"unsupported URL scheme: {parsed.scheme or '(none)'}")
+
+    req = urllib.request.Request(
+        cleaned,
+        headers={"Accept": "*/*", "User-Agent": "use-vault-mcp/1.0"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            ctype = (
+                resp.headers.get("Content-Type") or "application/octet-stream"
+            ).split(";")[0].strip()
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                block = resp.read(64 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                if total > max_bytes:
+                    raise RuntimeError(f"Download too large (max {max_bytes} bytes)")
+                chunks.append(block)
+            data = b"".join(chunks)
+            if not data:
+                raise RuntimeError("Empty download")
+            return data, ctype
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} GET {cleaned}: {detail[:500]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to fetch {cleaned}: {exc}") from exc
+
+
+def api_upload(
+    vault_path: str,
+    data: bytes,
+    *,
+    filename: Optional[str] = None,
+    content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    timeout: float = 120.0,
+) -> Any:
+    """POST multipart ``/api/files/upload`` (images / binary beside a note)."""
+    import mimetypes
+
+    uid = resolve_user_id(user_id)
+    cleaned = normalize_vault_path(vault_path)
+    if not data:
+        raise ValueError("empty file")
+
+    name = filename or Path(cleaned).name or "upload.bin"
+    ctype = (
+        (content_type or "").strip()
+        or mimetypes.guess_type(name)[0]
+        or "application/octet-stream"
+    )
+    boundary = f"----VaultUpload{int(time.time() * 1000)}{os.getpid()}"
+    body = (
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="path"\r\n\r\n'
+            f"{cleaned}\r\n"
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{name}"\r\n'
+            f"Content-Type: {ctype}\r\n\r\n"
+        ).encode("utf-8")
+        + data
+        + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    )
+
+    headers = _auth_headers(uid, require_auth=True)
+    headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+    url = f"{vault_base_url()}/api/files/upload"
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            return json.loads(raw.decode("utf-8")) if raw else {"ok": True, "path": cleaned}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+        except Exception:
+            parsed = detail
+        raise RuntimeError(f"HTTP {exc.code} POST /api/files/upload: {parsed}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Failed to reach ob-note at {vault_base_url()}: {exc}") from exc
 
 
 def to_json(payload: Any) -> str:

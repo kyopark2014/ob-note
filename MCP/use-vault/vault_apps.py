@@ -76,11 +76,9 @@ def with_urls(value: Any) -> Any:
     return out
 
 
-def _require_actor(actor_id: str) -> str:
-    value = (actor_id or "").strip()
-    if not value:
-        raise ValueError("actor_id is required (account login id / email)")
-    return value
+def _require_actor(actor_id: str = "") -> str:
+    # Empty or nickname (no @) → DEFAULT_ACTOR_ID (kyopark2014@gmail.com).
+    return vault.resolve_actor_id(actor_id)
 
 
 def _result(kind: str, payload: Any, text: str | None = None) -> CallToolResult:
@@ -109,11 +107,11 @@ def _error(exc: Exception) -> CallToolResult:
 
 
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
-def vault_tree(actor_id: str) -> CallToolResult:
+def vault_tree(actor_id: str = vault.DEFAULT_ACTOR_ID) -> CallToolResult:
     """
     Return the full file tree for the caller's vault (GET /api/files/tree).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     return: JSON tree; each note includes deep-link url — summarize as a linked TOC
     """
     try:
@@ -125,11 +123,11 @@ def vault_tree(actor_id: str) -> CallToolResult:
 
 
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
-def vault_list(actor_id: str, prefix: str = "", ext: str = "md") -> CallToolResult:
+def vault_list(actor_id: str = vault.DEFAULT_ACTOR_ID, prefix: str = "", ext: str = "md") -> CallToolResult:
     """
     List files under a vault folder prefix (GET /api/files/list).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     prefix: folder prefix, e.g. Meeting or notes (empty = vault root).
     ext: extension filter — md | txt | * (default md).
     return: JSON file list with deep-link url per note — reply with a linked TOC
@@ -175,11 +173,11 @@ def _note_ui_payload(body: dict[str, Any]) -> dict[str, Any]:
 
 
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
-def vault_read(actor_id: str, path: str, raw: bool = False) -> CallToolResult:
+def vault_read(path: str, actor_id: str = vault.DEFAULT_ACTOR_ID, raw: bool = False) -> CallToolResult:
     """
     Read a vault note (GET /api/files/read).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative path, e.g. Meeting/Weekly-Sync.md
     raw: if true, return markdown body only; otherwise full JSON.
     return: note JSON (includes deep-link url) or markdown body
@@ -219,12 +217,12 @@ _MAX_ASSET_BYTES = 2 * 1024 * 1024
 
 
 @apps.tool(resource_uri=VIEW_URI, visibility=["app"])
-def vault_render(actor_id: str, content: str, path: str = "") -> CallToolResult:
+def vault_render(content: str, actor_id: str = vault.DEFAULT_ACTOR_ID, path: str = "") -> CallToolResult:
     """
     Render markdown to HTML for the MCP App preview (POST /api/files/render).
 
     Uses the same pipeline as public ``/s/{token}`` share pages (not the client kit).
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     content: full markdown body.
     path: optional vault-relative note path (context only).
     return: JSON with html (structuredContent; not for model text).
@@ -257,11 +255,11 @@ def vault_render(actor_id: str, content: str, path: str = "") -> CallToolResult:
 
 
 @apps.tool(resource_uri=VIEW_URI, visibility=["app"])
-def vault_asset(actor_id: str, path: str) -> CallToolResult:
+def vault_asset(path: str, actor_id: str = vault.DEFAULT_ACTOR_ID) -> CallToolResult:
     """
     Read a vault attachment for the MCP App viewer (GET /api/files/raw).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative file path, e.g. AI/Drawing/img_abc.png
     return: JSON with data_url for images (used by the vault viewer; not for model text).
     """
@@ -303,11 +301,11 @@ def vault_asset(actor_id: str, path: str) -> CallToolResult:
 
 
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
-def vault_search(actor_id: str, query: str, limit: int = 50) -> CallToolResult:
+def vault_search(query: str, actor_id: str = vault.DEFAULT_ACTOR_ID, limit: int = 50) -> CallToolResult:
     """
     Full-text search over the vault index (GET /api/search).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     query: search query text.
     limit: max results (1–200, default 50).
     return: JSON {query, results} with deep-link url per hit — reply as a linked TOC
@@ -327,11 +325,11 @@ def vault_search(actor_id: str, query: str, limit: int = 50) -> CallToolResult:
 
 
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
-def vault_graph(actor_id: str) -> CallToolResult:
+def vault_graph(actor_id: str = vault.DEFAULT_ACTOR_ID) -> CallToolResult:
     """
     Return the wiki-link graph for the vault (GET /api/graph).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     return: JSON graph (nodes/links)
     """
     try:
@@ -343,11 +341,11 @@ def vault_graph(actor_id: str) -> CallToolResult:
 
 
 @apps.tool(resource_uri=VIEW_URI, meta={"ui/resourceUri": VIEW_URI})
-def vault_backlinks(actor_id: str, path: str) -> CallToolResult:
+def vault_backlinks(path: str, actor_id: str = vault.DEFAULT_ACTOR_ID) -> CallToolResult:
     """
     Return notes that link to the given note (GET /api/graph/backlinks).
 
-    actor_id: account login id / email from the system prompt.
+    actor_id: Google login email (default kyopark2014@gmail.com; nicknames without @ ignored).
     path: vault-relative note path.
     return: JSON backlinks
     """
