@@ -17,13 +17,13 @@ SEP-2640 `io.modelcontextprotocol/skills` 확장을 선언합니다.
 
 `capabilities` 딕셔너리를 직접 쓰지 않습니다. `MCPServer(extensions=[apps, skills])`에 Extension을 넘기면 SDK가 `initialize` 응답에 자동으로 넣습니다.
 
-| Extension | `identifier` | `settings()` | 광고 위치 |
+| Extension | `identifier` | `settings()` | advertise 위치 |
 |-----------|--------------|--------------|-----------|
 | `Skills` (`vault_skills.py`) | `io.modelcontextprotocol/skills` | `{"directoryRead": False}` | `capabilities.extensions[…]` |
 | `Apps` (`vault_apps.py`) | `io.modelcontextprotocol/ui` | `{}` | 동일 |
 
 SDK `_apply_extension`이 각 Extension의 tools / resources / methods를 등록하고  
-`ServerCapabilities.extensions[identifier] = settings()` 로 광고합니다.  
+`ServerCapabilities.extensions[identifier] = settings()` 로 advertise합니다.
 `initialize` 시 `get_capabilities()`가 핸들러 유무 + extension map을 합칩니다.
 
 ```json
